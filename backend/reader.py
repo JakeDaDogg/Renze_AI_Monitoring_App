@@ -1,364 +1,248 @@
 """
-reader.py — backend reader with stub processor for the Renze C9 demo.
+reader.py — Renze backend reader (v2): bundles rows by data timestamp, stub processor.
 
-Polls demo_root/inbox/ every 100 ms, processes packets strictly in time order,
-appends raw copies, computes 1-min means, and commits packets + minutes to SQLite.
-Scoring (Part 2) replaces the stub processor call.
+Folders (under demo_root/):
+    to_be_processed/   the writer drops one CSV per 5-s row (contract in packet_io.py)
+    processed/         minutes.db  — 1-min sensor means (+ n_rows per minute)
+                       inference.db — processor output per minute
+    bad/               files that failed to parse; their rows count as missing
+    control/EOS        written by the replay agent when it has finished
+
+Rules
+- A bundle is every row with ts in [cut, cut + 900). It is processed once a row with
+  ts >= cut + 900 exists, i.e. the bundle is complete. Otherwise the reader waits (writer
+  stopped or slow). A backlog is processed bundle after bundle until the reader catches up.
+- After EOS, the remaining rows are flushed (including a final partial bundle) and the
+  reader exits.
+- Next cut at start-up: the bundle after the last one committed in BOTH databases (the
+  earlier of the two). With nothing committed, the bundle containing the oldest file.
+- Per bundle: commit minutes.db, commit inference.db, then delete the bundle's files.
+  Inserts are keyed by ts (INSERT OR IGNORE), so a crash at any point redoes that bundle.
+- A SQLite error waits RETRY_S and retries the same bundle instead of stopping the reader.
+- Minutes with no rows are skipped; partial minutes are averaged; n_rows says how many rows.
 
 Usage:
-    python reader.py [--demo-root PATH] [--gap-wait SECS] [--db PATH]
+    python reader.py [--demo-root PATH] [--poll SECS]
 """
 from __future__ import annotations
 
 import os
 import sqlite3
 import time
-from collections import deque
-from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
 
 from packet_io import (
+    BUNDLE_S,
     CANON_SENSOR_COLS,
-    ROWS_PER_PACKET,
+    N_COLS,
     VCB2_IDX,
-    name_to_quarter,
+    floor_bundle,
+    name_to_ts,
     one_min_means,
-    quarter_to_name,
-    read_packet,
-    validate_packet,
+    read_row,
+    ts_to_name,
 )
 
 DEFAULT_DEMO_ROOT = Path(__file__).parent.parent / 'demo_root'
-DEFAULT_GAP_WAIT  = 2.0   # seconds of wall time before declaring a gap
-POLL_INTERVAL     = 0.1   # seconds between inbox scans
+POLL_S  = 0.1        # wall seconds between folder scans
+RETRY_S = 1.0        # wall seconds before retrying a failed database commit
+STUB_VERSION = 'stub-2xVCB2'
 
-# ── SQLite schema (Part 1 tables only) ───────────────────────────────────────
+# ── SQLite ────────────────────────────────────────────────────────────────────
 
-_SENSOR_COLS_DDL = '\n'.join(
-    f'    "{col}" REAL,' for col in CANON_SENSOR_COLS
-)
-
-_DDL = f"""
+_PRAGMAS = """
 PRAGMA journal_mode=WAL;
 PRAGMA synchronous=NORMAL;
 PRAGMA busy_timeout=5000;
-PRAGMA foreign_keys=ON;
+"""
 
-CREATE TABLE IF NOT EXISTS cycles (
-    cycle_id    INTEGER PRIMARY KEY,
-    started_ts  INTEGER,
-    closed_ts   INTEGER,
-    close_reason TEXT,
-    export_path TEXT
-);
+_SENSOR_DDL = ',\n'.join(f'    "{c}" REAL' for c in CANON_SENSOR_COLS)
 
-CREATE TABLE IF NOT EXISTS packets (
-    quarter_ts     INTEGER PRIMARY KEY,
-    cycle_id       INTEGER,
-    file_name      TEXT,
-    status         TEXT,
-    n_rows         INTEGER,
-    received_wall  REAL,
-    committed_wall REAL,
-    FOREIGN KEY (cycle_id) REFERENCES cycles(cycle_id)
-);
-
+_MINUTES_DDL = f"""
 CREATE TABLE IF NOT EXISTS minutes (
-    ts       INTEGER PRIMARY KEY,
-    cycle_id INTEGER,
-{_SENSOR_COLS_DDL}
-    vcb2_roll15 REAL,
-    FOREIGN KEY (cycle_id) REFERENCES cycles(cycle_id)
-);
-
-CREATE TABLE IF NOT EXISTS messages (
-    msg_id   INTEGER PRIMARY KEY AUTOINCREMENT,
-    ts_data  INTEGER,
-    ts_wall  REAL,
-    level    TEXT,
-    type     TEXT,
-    text     TEXT,
-    payload  TEXT,
-    acked    INTEGER DEFAULT 0
+    ts     INTEGER PRIMARY KEY,
+    n_rows INTEGER NOT NULL,
+{_SENSOR_DDL}
 );
 """
 
-_INSERT_PACKET = """
-INSERT OR IGNORE INTO packets
-    (quarter_ts, cycle_id, file_name, status, n_rows, received_wall, committed_wall)
-VALUES (?, ?, ?, ?, ?, ?, ?)
+_INFERENCE_DDL = """
+CREATE TABLE IF NOT EXISTS inference (
+    ts            INTEGER PRIMARY KEY,
+    vcb2_x2       REAL,
+    model_version TEXT NOT NULL
+);
 """
 
-_MINUTE_COLS = ['ts', 'cycle_id'] + [f'"{c}"' for c in CANON_SENSOR_COLS] + ['vcb2_roll15']
-_INSERT_MINUTE = (
-    f"INSERT OR REPLACE INTO minutes ({', '.join(_MINUTE_COLS)}) "
-    f"VALUES ({', '.join(['?'] * len(_MINUTE_COLS))})"
-)
-
-_INSERT_MESSAGE = """
-INSERT INTO messages (ts_data, ts_wall, level, type, text, payload)
-VALUES (?, ?, ?, ?, ?, ?)
-"""
+_MIN_COLS = ['ts', 'n_rows'] + [f'"{c}"' for c in CANON_SENSOR_COLS]
+_INSERT_MINUTE = (f"INSERT OR IGNORE INTO minutes ({', '.join(_MIN_COLS)}) "
+                  f"VALUES ({', '.join('?' * len(_MIN_COLS))})")
+_INSERT_INFERENCE = ("INSERT OR IGNORE INTO inference (ts, vcb2_x2, model_version) "
+                     "VALUES (?, ?, ?)")
 
 
-# ── Stub processor state ──────────────────────────────────────────────────────
-
-class _StubState:
-    """Minimal state for the Part 1 stub processor (VCB2 rolling mean only)."""
-    def __init__(self, cycle_id: int) -> None:
-        self.cycle_id = cycle_id
-        self._vcb2_trail: deque[float] = deque(maxlen=15)
-
-    def vcb2_roll15(self, vcb2_val: float) -> float | None:
-        self._vcb2_trail.append(vcb2_val)
-        if len(self._vcb2_trail) < 15:
-            return None
-        return float(np.mean(self._vcb2_trail))
-
-
-# ── Database helpers ──────────────────────────────────────────────────────────
-
-def _init_db(db_path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(db_path)
-    conn.executescript(_DDL)
+def _open_db(path: Path, ddl: str) -> sqlite3.Connection:
+    conn = sqlite3.connect(path)
+    conn.executescript(_PRAGMAS + ddl)
     return conn
 
 
-def _ensure_cycle(conn: sqlite3.Connection, started_ts: int) -> int:
-    """Return cycle_id=1, inserting the cycle row if it doesn't exist."""
-    conn.execute(
-        "INSERT OR IGNORE INTO cycles (cycle_id, started_ts) VALUES (1, ?)",
-        (started_ts,),
-    )
-    return 1
+def _resume_cut(m_conn: sqlite3.Connection, i_conn: sqlite3.Connection) -> int | None:
+    """Bundle after the last one committed in both databases, or None if either is empty."""
+    last_m = m_conn.execute('SELECT MAX(ts) FROM minutes').fetchone()[0]
+    last_i = i_conn.execute('SELECT MAX(ts) FROM inference').fetchone()[0]
+    if last_m is None or last_i is None:
+        return None
+    return floor_bundle(min(last_m, last_i)) + BUNDLE_S
 
 
-def _post_message(
-    conn: sqlite3.Connection,
-    ts_data: int | None,
-    level: str,
-    msg_type: str,
-    text: str,
-    payload: str | None = None,
-) -> None:
-    conn.execute(
-        _INSERT_MESSAGE,
-        (ts_data, time.time(), level, msg_type, text, payload),
-    )
-    print(f"[{level.upper():8s}] {msg_type}: {text}")
+def _commit(m_conn: sqlite3.Connection, i_conn: sqlite3.Connection,
+            minute_rows: list[tuple], inference_rows: list[tuple]) -> None:
+    """Commit one bundle to both databases; retry on any SQLite error (inserts are idempotent)."""
+    while True:
+        try:
+            with m_conn:
+                m_conn.executemany(_INSERT_MINUTE, minute_rows)
+            with i_conn:
+                i_conn.executemany(_INSERT_INFERENCE, inference_rows)
+            return
+        except sqlite3.Error as exc:
+            print(f"[DB RETRY] {exc} — retrying in {RETRY_S:.0f} s")
+            time.sleep(RETRY_S)
 
 
-# ── Raw-copy append ───────────────────────────────────────────────────────────
+# ── Processor (stub) ──────────────────────────────────────────────────────────
 
-def _append_raw(raw_dir: Path, quarter_ts: int, data: np.ndarray) -> None:
-    """Append 180 rows to raw/YYYYMMDD.csv (UTC date of the quarter)."""
-    from packet_io import RAW_SENSOR_COLS
-    dt = datetime.fromtimestamp(quarter_ts, tz=timezone.utc)
-    day_file = raw_dir / f"{dt.strftime('%Y%m%d')}.csv"
-    full_header = 'ts,' + ','.join(RAW_SENSOR_COLS)
-    write_header = not day_file.exists()
-    with open(day_file, 'a') as fh:
-        if write_header:
-            fh.write(full_header + '\n')
-        fmt = ['%d'] + ['%.9g'] * 49
-        np.savetxt(fh, data, delimiter=',', comments='', fmt=fmt)
+def process(min_ts: np.ndarray, means: np.ndarray) -> list[tuple]:
+    """Stub: output = 2 × the minute's VCB2-Power mean. Replace with the RUL models."""
+    return [(int(t), 2.0 * float(m[VCB2_IDX]), STUB_VERSION) for t, m in zip(min_ts, means)]
 
 
-# ── Packet processing ─────────────────────────────────────────────────────────
+# ── Files ─────────────────────────────────────────────────────────────────────
 
-def _process_ok(
-    path: Path,
-    received_wall: float,
-    conn: sqlite3.Connection,
-    raw_dir: Path,
-    state: _StubState,
-) -> None:
-    """Parse, validate, store raw copy, compute 1-min means, commit to SQLite."""
-    quarter_ts, data = read_packet(path)
-    validate_packet(quarter_ts, data)
-
-    _append_raw(raw_dir, quarter_ts, data)
-    min_ts, means = one_min_means(data)
-
-    with conn:
-        # Ensure cycle exists (first packet sets cycle start)
-        _ensure_cycle(conn, int(min_ts[0]))
-
-        conn.execute(
-            _INSERT_PACKET,
-            (quarter_ts, state.cycle_id, path.name, 'ok',
-             ROWS_PER_PACKET, received_wall, time.time()),
-        )
-        for i in range(len(min_ts)):
-            vcb2_val = float(means[i, VCB2_IDX])
-            roll15   = state.vcb2_roll15(vcb2_val)
-            row = (int(min_ts[i]), state.cycle_id) + tuple(means[i]) + (roll15,)
-            conn.execute(_INSERT_MINUTE, row)
+def _scan(tbp: Path) -> list[tuple[int, str]]:
+    """(ts, name) of every packet file in to_be_processed/, sorted by ts (.tmp/ is ignored)."""
+    out = []
+    with os.scandir(tbp) as it:
+        for e in it:
+            ts = name_to_ts(e.name)
+            if ts is not None and e.is_file():
+                out.append((ts, e.name))
+    out.sort()
+    return out
 
 
-def _record_missing(
-    quarter_ts: int,
-    conn: sqlite3.Connection,
-    state: _StubState,
-) -> None:
-    with conn:
-        conn.execute(
-            _INSERT_PACKET,
-            (quarter_ts, state.cycle_id, quarter_to_name(quarter_ts),
-             'missing', 0, None, time.time()),
-        )
-        _post_message(conn, quarter_ts, 'warning', 'data_gap',
-                      f"quarter {quarter_to_name(quarter_ts)} not received within gap_wait")
+def _remove(path: Path) -> None:
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        pass
 
 
-def _record_late(
-    path: Path,
-    raw_dir: Path,
-    conn: sqlite3.Connection,
-    state: _StubState,
-) -> None:
-    quarter_ts, data = read_packet(path)
-    _append_raw(raw_dir, quarter_ts, data)
-    with conn:
-        conn.execute(
-            _INSERT_PACKET,
-            (quarter_ts, state.cycle_id, path.name, 'late',
-             ROWS_PER_PACKET, time.time(), time.time()),
-        )
-        _post_message(conn, quarter_ts, 'warning', 'late_packet',
-                      f"{path.name} arrived after its quarter was already passed")
+def _read_bundle(tbp: Path, bad: Path, files: list[tuple[int, str]]) -> np.ndarray:
+    """Read the bundle's files; a file that fails to parse is moved to bad/ and skipped."""
+    rows = []
+    for _, name in files:
+        path = tbp / name
+        try:
+            rows.append(read_row(path))
+        except (ValueError, OSError) as exc:
+            print(f"[BAD     ] {name}: {exc} → bad/")
+            try:
+                os.replace(path, bad / name)
+            except FileNotFoundError:
+                pass
+    return np.array(rows, dtype=np.float64).reshape(-1, N_COLS)
 
 
-def _record_rejected(
-    path: Path,
-    reason: str,
-    conn: sqlite3.Connection,
-    state: _StubState,
-) -> None:
-    quarter_ts = name_to_quarter(path.name) or 0
-    with conn:
-        conn.execute(
-            _INSERT_PACKET,
-            (quarter_ts, state.cycle_id, path.name, 'rejected',
-             0, None, time.time()),
-        )
-        _post_message(conn, quarter_ts, 'warning', 'rejected_packet',
-                      f"{path.name} rejected: {reason}")
-
-
-# ── Inbox scan ────────────────────────────────────────────────────────────────
-
-def _sorted_inbox(inbox: Path) -> list[str]:
-    """Return sorted list of packet file names in inbox/ (ignoring .tmp/)."""
-    names = []
-    for entry in os.scandir(inbox):
-        if entry.is_file() and name_to_quarter(entry.name) is not None:
-            names.append(entry.name)
-    return sorted(names)
+def _process_bundle(cut: int, files: list[tuple[int, str]], tbp: Path, bad: Path,
+                    m_conn: sqlite3.Connection, i_conn: sqlite3.Connection) -> None:
+    rows = _read_bundle(tbp, bad, files)
+    n_min = 0
+    if len(rows):
+        min_ts, means, n_rows = one_min_means(rows, cut)
+        minute_rows = [(int(t), int(n)) + tuple(float(v) for v in m)
+                       for t, n, m in zip(min_ts, n_rows, means)]
+        _commit(m_conn, i_conn, minute_rows, process(min_ts, means))
+        n_min = len(min_ts)
+    for _, name in files:            # only after both commits
+        _remove(tbp / name)
+    print(f"[OK      ] {ts_to_name(cut)[6:-4]}  rows {len(rows):3d}  minutes {n_min:2d}")
 
 
 # ── Main loop ─────────────────────────────────────────────────────────────────
 
-def run(demo_root: Path, gap_wait_s: float, db_path: Path) -> None:
-    inbox     = demo_root / 'inbox'
-    processed = inbox / 'processed'
-    rejected  = inbox / 'rejected'
-    raw_dir   = demo_root / 'raw'
-    control   = demo_root / 'control'
-    eos_path  = control / 'EOS'
-
-    for d in [inbox, processed, rejected, raw_dir, control]:
+def run(demo_root: Path, poll_s: float) -> None:
+    tbp       = demo_root / 'to_be_processed'
+    processed = demo_root / 'processed'
+    bad       = demo_root / 'bad'
+    eos       = demo_root / 'control' / 'EOS'
+    for d in (tbp, processed, bad, eos.parent):
         d.mkdir(parents=True, exist_ok=True)
 
-    conn  = _init_db(db_path)
-    state = _StubState(cycle_id=1)
+    m_conn = _open_db(processed / 'minutes.db', _MINUTES_DDL)
+    i_conn = _open_db(processed / 'inference.db', _INFERENCE_DDL)
 
-    next_expected: int | None = None   # epoch-second quarter ts
-    gap_since: float | None   = None   # wall time when gap first detected
+    # An EOS left by a finished run with nothing to drain would end this run at once.
+    if eos.exists() and not _scan(tbp):
+        eos.unlink()
 
-    print(f"Reader started — polling {inbox}")
-    print(f"Database: {db_path}")
+    cut = _resume_cut(m_conn, i_conn)
+    print(f"Reader started — {tbp}")
+    print(f"Next cut: {ts_to_name(cut)[6:-4] if cut is not None else 'from the oldest file'}")
 
+    next_tick = time.monotonic()
     while True:
-        files = _sorted_inbox(inbox)
+        finished = eos.exists()          # read before scanning: every file written before EOS is seen
+        files = _scan(tbp)
 
-        while True:
-            if not files:
-                break
+        if cut is None and files:
+            cut = floor_bundle(files[0][0])
 
-            first_q = name_to_quarter(files[0])
+        if cut is not None:
+            # Leftovers of a bundle committed before a crash: already in the databases.
+            k = 0
+            while k < len(files) and files[k][0] < cut:
+                _remove(tbp / files[k][1])
+                k += 1
+            files = files[k:]
 
-            # Initialise expected from first file seen
-            if next_expected is None:
-                next_expected = first_q
+            # Complete bundles (all remaining ones after EOS), back to back.
+            while files and (files[-1][0] >= cut + BUNDLE_S or finished):
+                end = cut + BUNDLE_S
+                k = 0
+                while k < len(files) and files[k][0] < end:
+                    k += 1
+                if k == 0:                       # gap of whole bundles: jump to the next data
+                    cut = floor_bundle(files[0][0])
+                    continue
+                _process_bundle(cut, files[:k], tbp, bad, m_conn, i_conn)
+                files = files[k:]
+                cut = end
 
-            if first_q == next_expected:
-                # Normal: expected packet arrived
-                gap_since = None
-                path = inbox / files[0]
-                received_wall = time.time()
-                try:
-                    _process_ok(path, received_wall, conn, raw_dir, state)
-                    os.replace(path, processed / files[0])
-                    print(f"[OK      ] {files[0]}")
-                except (ValueError, OSError) as exc:
-                    os.replace(path, rejected / files[0])
-                    _record_rejected(
-                        rejected / files[0], str(exc), conn, state
-                    )
-                next_expected += 900
-                files = _sorted_inbox(inbox)
-
-            elif first_q < next_expected:
-                # Late packet: arrived after its quarter was already processed
-                path = inbox / files[0]
-                try:
-                    _record_late(path, raw_dir, conn, state)
-                    os.replace(path, processed / files[0])
-                except (ValueError, OSError) as exc:
-                    os.replace(path, rejected / files[0])
-                    _record_rejected(rejected / files[0], str(exc), conn, state)
-                files = _sorted_inbox(inbox)
-
-            else:
-                # first_q > next_expected → gap; a later file is waiting
-                if gap_since is None:
-                    gap_since = time.time()
-                if time.time() - gap_since >= gap_wait_s:
-                    _record_missing(next_expected, conn, state)
-                    next_expected += 900
-                    gap_since = None
-                    # re-check without rescanning — same files list is fine
-                else:
-                    break  # keep waiting
-
-        # Check for EOS exit condition
-        if eos_path.exists() and not files:
-            with conn:
-                _post_message(conn, None, 'info', 'replay_finished',
-                               'EOS received and inbox empty — replay finished')
-            print("Reader done.")
+        if finished and not files:
+            print("EOS and nothing left — reader done.")
             break
 
-        time.sleep(POLL_INTERVAL)
+        next_tick += poll_s
+        now = time.monotonic()
+        if next_tick <= now:                     # overran: skip missed ticks, stay on the grid
+            next_tick += (int((now - next_tick) // poll_s) + 1) * poll_s
+        time.sleep(next_tick - now)
 
-    conn.close()
+    m_conn.close()
+    i_conn.close()
 
-
-# ── CLI ───────────────────────────────────────────────────────────────────────
 
 def main() -> None:
     import argparse
-    ap = argparse.ArgumentParser(description='Renze backend reader (Part 1 stub)')
+    ap = argparse.ArgumentParser(description='Renze backend reader (v2, stub processor)')
     ap.add_argument('--demo-root', type=Path, default=DEFAULT_DEMO_ROOT)
-    ap.add_argument('--gap-wait',  type=float, default=DEFAULT_GAP_WAIT, metavar='SECS')
-    ap.add_argument('--db',        type=Path, default=None)
+    ap.add_argument('--poll', type=float, default=POLL_S, metavar='SECS')
     args = ap.parse_args()
-
-    db_path = args.db or (args.demo_root / 'renze.db')
-    run(args.demo_root, args.gap_wait, db_path)
+    run(args.demo_root, args.poll)
 
 
 if __name__ == '__main__':

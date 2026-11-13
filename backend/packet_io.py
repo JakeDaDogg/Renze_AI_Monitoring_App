@@ -1,7 +1,16 @@
 """
-packet_io.py — shared packet format, IO, and 1-min means for the Renze demo pipeline.
+packet_io.py — shared file contract for the Renze replay agent and reader (v2).
 
-Single source of truth for the file contract between replay_agent and reader.
+v2 contract: one CSV per 5-s row
+- Folder: demo_root/to_be_processed/
+- Name:   renze_YYYYMMDDTHHMMSSZ.csv, the row's UTC timestamp. Alphabetical order = time order.
+- Body:   header line `ts,<49 RAW_SENSOR_COLS>`, then one data line: integer epoch seconds and
+          49 values with 9 significant digits, '.' decimal point, '\\n' line ends.
+- Publish: the writer writes .tmp/<name>.part, then os.replace()s it into the folder, so the
+          reader never sees a half-written file.
+
+The reader bundles rows by data timestamp into [cut, cut + BUNDLE_S) windows, independent of
+how many files there are.
 """
 from __future__ import annotations
 
@@ -36,93 +45,91 @@ VCB2_IDX: int = CANON_SENSOR_COLS.index('VCB2-Power')  # 4
 MODEL_FEAT_INDICES: list[int] = [0, 4, 12, 13, 14, 19, 20, 21, 27, 29, 43]
 MODEL_FEAT_COLS: list[str] = [CANON_SENSOR_COLS[i] for i in MODEL_FEAT_INDICES]
 
-ROWS_PER_PACKET: int = 180   # 180 × 5 s = 900 s = 15 min
-MINS_PER_PACKET: int = 15
-ROWS_PER_MIN: int = 12       # 12 × 5 s = 60 s
+ROW_S: int = 5          # one data row every 5 s
+MIN_S: int = 60         # 1-min samples
+BUNDLE_S: int = 900     # reader bundle = 15 min of data (one model window)
 
-_PACKET_RE = re.compile(r'^renze_(\d{8}T\d{4}Z)\.csv$')
-_PACKET_FMT = '%Y%m%dT%H%MZ'
+N_COLS: int = 1 + len(RAW_SENSOR_COLS)   # 50: ts + 49 sensors
+HEADER: str = 'ts,' + ','.join(RAW_SENSOR_COLS)
 
-
-# ── File-name ↔ quarter timestamp ─────────────────────────────────────────────
-
-def quarter_to_name(quarter_ts: int) -> str:
-    """Return the canonical file name for a quarter epoch timestamp."""
-    dt = datetime.fromtimestamp(quarter_ts, tz=timezone.utc)
-    return f"renze_{dt.strftime(_PACKET_FMT)}.csv"
+_NAME_RE = re.compile(r'^renze_(\d{8}T\d{6}Z)\.csv$')
+_NAME_FMT = '%Y%m%dT%H%M%SZ'
 
 
-def name_to_quarter(name: str) -> int | None:
-    """Return the epoch-second quarter timestamp, or None if name doesn't match."""
-    m = _PACKET_RE.match(name)
+# ── File name ↔ timestamp ─────────────────────────────────────────────────────
+
+def ts_to_name(ts: int) -> str:
+    """Canonical file name for a row's epoch timestamp (UTC)."""
+    return f"renze_{datetime.fromtimestamp(int(ts), tz=timezone.utc).strftime(_NAME_FMT)}.csv"
+
+
+def name_to_ts(name: str) -> int | None:
+    """Epoch timestamp from a file name, or None if the name is not a packet file."""
+    m = _NAME_RE.match(name)
     if not m:
         return None
-    dt = datetime.strptime(m.group(1), _PACKET_FMT).replace(tzinfo=timezone.utc)
-    return int(dt.timestamp())
+    return int(datetime.strptime(m.group(1), _NAME_FMT).replace(tzinfo=timezone.utc).timestamp())
 
 
-# ── CSV write ─────────────────────────────────────────────────────────────────
-
-def write_packet(path: Path, rows: np.ndarray) -> None:
-    """Write a 180×50 float64 array (col 0 = epoch ts, cols 1–49 = RAW_SENSOR_COLS) to CSV."""
-    header = 'ts,' + ','.join(RAW_SENSOR_COLS)
-    fmt = ['%d'] + ['%.9g'] * 49
-    np.savetxt(path, rows, delimiter=',', header=header, comments='', fmt=fmt)
+def floor_bundle(ts: int) -> int:
+    """Start of the bundle that contains ts."""
+    return int(ts) - int(ts) % BUNDLE_S
 
 
-# ── CSV read ──────────────────────────────────────────────────────────────────
+# ── Write ─────────────────────────────────────────────────────────────────────
 
-def read_packet(path: Path) -> tuple[int, np.ndarray]:
+def write_row(path: Path, row: np.ndarray) -> None:
+    """Write one 50-value row (col 0 = epoch ts, cols 1–49 = RAW_SENSOR_COLS) to a CSV."""
+    line = f"{int(row[0])}," + ','.join(f'{float(v):.9g}' for v in row[1:])
+    with open(path, 'w', newline='\n') as fh:
+        fh.write(HEADER + '\n' + line + '\n')
+
+
+# ── Read and validate ─────────────────────────────────────────────────────────
+
+def read_row(path: Path) -> np.ndarray:
     """
-    Read a packet CSV.  Returns (quarter_ts, array[180, 50]).
-    Raises ValueError for any format error detected before full parsing.
+    Read and validate one packet file. Returns a (50,) float64 array.
+    Raises ValueError if the file breaks the contract.
     """
-    quarter_ts = name_to_quarter(path.name)
-    if quarter_ts is None:
-        raise ValueError(f"name does not match packet pattern: {path.name}")
-
+    ts = name_to_ts(path.name)
+    if ts is None:
+        raise ValueError('name does not match the packet pattern')
     with open(path) as fh:
-        first_line = fh.readline().rstrip('\n')
-    expected_header = 'ts,' + ','.join(RAW_SENSOR_COLS)
-    if first_line != expected_header:
-        raise ValueError(f"unexpected header in {path.name}")
-
-    data = np.loadtxt(path, delimiter=',', skiprows=1, dtype=np.float64)
-    if data.ndim != 2 or data.shape != (ROWS_PER_PACKET, 50):
-        raise ValueError(
-            f"expected {ROWS_PER_PACKET}×50 array, got {data.shape} in {path.name}"
-        )
-    return quarter_ts, data
-
-
-# ── Validation ────────────────────────────────────────────────────────────────
-
-def validate_packet(quarter_ts: int, data: np.ndarray) -> None:
-    """
-    Raise ValueError if the packet fails the contract:
-      - ts column == q, q+5, …, q+895
-      - all sensor values finite
-    """
-    expected = np.arange(quarter_ts, quarter_ts + ROWS_PER_PACKET * 5, 5, dtype=np.int64)
-    if not np.array_equal(data[:, 0].astype(np.int64), expected):
-        raise ValueError("ts column does not match quarter alignment")
-    if not np.all(np.isfinite(data[:, 1:])):
-        raise ValueError("non-finite values in sensor columns")
+        lines = fh.read().splitlines()
+    if len(lines) != 2 or lines[0] != HEADER:
+        raise ValueError('expected the header line plus one data line')
+    parts = lines[1].split(',')
+    if len(parts) != N_COLS:
+        raise ValueError(f'expected {N_COLS} values, got {len(parts)}')
+    row = np.array([float(p) for p in parts], dtype=np.float64)  # float() raises ValueError
+    if row[0] != ts or ts % ROW_S:
+        raise ValueError('ts does not match the file name or the 5-s grid')
+    if not np.all(np.isfinite(row[1:])):
+        raise ValueError('non-finite sensor value')
+    return row
 
 
 # ── 1-minute means ────────────────────────────────────────────────────────────
 
-def one_min_means(data: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def one_min_means(rows: np.ndarray, bundle_start: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    Convert a 180×50 packet array into 1-minute mean samples.
+    1-min means of one bundle's rows (n × 50, any n ≥ 1, all ts in [bundle_start, +BUNDLE_S)).
 
-    Returns:
-        min_ts  : (15,) int64 — epoch-second start of each minute
-        means   : (15, 48) float64 — mean of the 12 × 5 s rows, PT104S dropped
+    Returns, for minutes that have at least one row (empty minutes are skipped):
+        min_ts : (k,) int64   — minute start
+        means  : (k, 48)      — mean over the rows present, PT104S dropped
+        n_rows : (k,) int64   — rows behind each mean (12 = complete minute)
     """
-    # cols 1:49 = RAW_SENSOR_COLS[0:48] = CANON_SENSOR_COLS (PT104S at col 49 dropped)
-    canon = data[:, 1:49]
-    reshaped = canon.reshape(MINS_PER_PACKET, ROWS_PER_MIN, len(CANON_SENSOR_COLS))
-    means = reshaped.mean(axis=1)
-    min_ts = data[::ROWS_PER_MIN, 0].astype(np.int64)
-    return min_ts, means
+    idx = ((rows[:, 0] - bundle_start) // MIN_S).astype(np.int64)
+    min_ts, means, n_rows = [], [], []
+    for m in range(BUNDLE_S // MIN_S):
+        sel = idx == m
+        n = int(sel.sum())
+        if n:
+            min_ts.append(bundle_start + m * MIN_S)
+            means.append(rows[sel, 1:1 + len(CANON_SENSOR_COLS)].mean(axis=0))
+            n_rows.append(n)
+    return (np.array(min_ts, dtype=np.int64),
+            np.array(means, dtype=np.float64).reshape(-1, len(CANON_SENSOR_COLS)),
+            np.array(n_rows, dtype=np.int64))
