@@ -112,24 +112,25 @@ def read_row(path: Path) -> np.ndarray:
 
 # ── 1-minute means ────────────────────────────────────────────────────────────
 
-def one_min_means(rows: np.ndarray, bundle_start: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def one_min_means(rows: np.ndarray, start: int, end: int | None = None
+                  ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    1-min means of one bundle's rows (n × 50, any n ≥ 1, all ts in [bundle_start, +BUNDLE_S)).
+    1-min means of rows (n × 50) with ts in [start, end); end defaults to start + BUNDLE_S.
+    Works for one bundle or a batch of many; start must sit on a minute boundary.
 
     Returns, for minutes that have at least one row (empty minutes are skipped):
         min_ts : (k,) int64   — minute start
         means  : (k, 48)      — mean over the rows present, PT104S dropped
         n_rows : (k,) int64   — rows behind each mean (12 = complete minute)
     """
-    idx = ((rows[:, 0] - bundle_start) // MIN_S).astype(np.int64)
-    min_ts, means, n_rows = [], [], []
-    for m in range(BUNDLE_S // MIN_S):
-        sel = idx == m
-        n = int(sel.sum())
-        if n:
-            min_ts.append(bundle_start + m * MIN_S)
-            means.append(rows[sel, 1:1 + len(CANON_SENSOR_COLS)].mean(axis=0))
-            n_rows.append(n)
-    return (np.array(min_ts, dtype=np.int64),
-            np.array(means, dtype=np.float64).reshape(-1, len(CANON_SENSOR_COLS)),
-            np.array(n_rows, dtype=np.int64))
+    end = start + BUNDLE_S if end is None else end
+    n_min = (end - start) // MIN_S
+    n_sens = len(CANON_SENSOR_COLS)
+    idx = ((rows[:, 0] - start) // MIN_S).astype(np.int64)
+    counts = np.bincount(idx, minlength=n_min)
+    sums = np.zeros((n_min, n_sens), dtype=np.float64)
+    np.add.at(sums, idx, rows[:, 1:1 + n_sens])
+    keep = np.flatnonzero(counts)
+    return (start + keep.astype(np.int64) * MIN_S,
+            sums[keep] / counts[keep, None],
+            counts[keep].astype(np.int64))

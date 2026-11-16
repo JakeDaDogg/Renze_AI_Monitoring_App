@@ -1,5 +1,5 @@
 """
-reader.py — Renze backend reader (v2): bundles rows by data timestamp, stub processor.
+reader.py — Renze backend reader (v2.1): scan-based batches cut by data timestamp, stub processor.
 
 Folders (under demo_root/):
     to_be_processed/   the writer drops one CSV per 5-s row (contract in packet_io.py)
@@ -9,20 +9,25 @@ Folders (under demo_root/):
     control/EOS        written by the replay agent when it has finished
 
 Rules
-- A bundle is every row with ts in [cut, cut + 900). It is processed once a row with
-  ts >= cut + 900 exists, i.e. the bundle is complete. Otherwise the reader waits (writer
-  stopped or slow). A backlog is processed bundle after bundle until the reader catches up.
+- Bundle = every row with ts in [cut, cut + 900). A bundle is complete once a row with
+  ts >= cut + 900 exists. The unfinished last bundle waits (writer stopped or slow).
+- Every scan (every --scan wall seconds) takes ALL complete bundles in the folder and runs
+  them as one batch: read → 1-min means → one processor call → one commit per database →
+  delete the files. Normally that is one bundle; after a reader outage it is the whole
+  backlog, processed without waiting. Batches are capped at --batch-max bundles (default 96
+  = one data day); a longer backlog runs as consecutive batches in the same scan.
 - After EOS, the remaining rows are flushed (including a final partial bundle) and the
   reader exits.
 - Next cut at start-up: the bundle after the last one committed in BOTH databases (the
   earlier of the two). With nothing committed, the bundle containing the oldest file.
-- Per bundle: commit minutes.db, commit inference.db, then delete the bundle's files.
-  Inserts are keyed by ts (INSERT OR IGNORE), so a crash at any point redoes that bundle.
-- A SQLite error waits RETRY_S and retries the same bundle instead of stopping the reader.
-- Minutes with no rows are skipped; partial minutes are averaged; n_rows says how many rows.
+- Inserts are keyed by ts (INSERT OR IGNORE) and files are deleted only after both commits,
+  so a crash at any point just redoes that batch.
+- A SQLite error waits RETRY_S and retries the same batch instead of stopping the reader.
+- Minutes with no rows are skipped; partial minutes are averaged; n_rows says how many.
 
 Usage:
-    python reader.py [--demo-root PATH] [--poll SECS]
+    python reader.py [--demo-root PATH] [--scan SECS] [--batch-max N]
+    Production: --scan 900 (default). C9 demo: --scan 0.1 (replayed data runs ~1,350× faster).
 """
 from __future__ import annotations
 
@@ -46,8 +51,9 @@ from packet_io import (
 )
 
 DEFAULT_DEMO_ROOT = Path(__file__).parent.parent / 'demo_root'
-POLL_S  = 0.1        # wall seconds between folder scans
-RETRY_S = 1.0        # wall seconds before retrying a failed database commit
+SCAN_S    = 900.0    # wall seconds between scans (production: one bundle per scan)
+BATCH_MAX = 96       # bundles per batch (96 × 15 min = one data day)
+RETRY_S   = 1.0      # wall seconds before retrying a failed database commit
 STUB_VERSION = 'stub-2xVCB2'
 
 # ── SQLite ────────────────────────────────────────────────────────────────────
@@ -100,7 +106,7 @@ def _resume_cut(m_conn: sqlite3.Connection, i_conn: sqlite3.Connection) -> int |
 
 def _commit(m_conn: sqlite3.Connection, i_conn: sqlite3.Connection,
             minute_rows: list[tuple], inference_rows: list[tuple]) -> None:
-    """Commit one bundle to both databases; retry on any SQLite error (inserts are idempotent)."""
+    """Commit one batch to both databases; retry on any SQLite error (inserts are idempotent)."""
     while True:
         try:
             with m_conn:
@@ -116,7 +122,11 @@ def _commit(m_conn: sqlite3.Connection, i_conn: sqlite3.Connection,
 # ── Processor (stub) ──────────────────────────────────────────────────────────
 
 def process(min_ts: np.ndarray, means: np.ndarray) -> list[tuple]:
-    """Stub: output = 2 × the minute's VCB2-Power mean. Replace with the RUL models."""
+    """
+    Stub: output = 2 × the minute's VCB2-Power mean. Replace with the RUL models.
+    Called once per batch with every minute of that batch (one bundle or a whole backlog),
+    so the real models can score all windows in one batched call.
+    """
     return [(int(t), 2.0 * float(m[VCB2_IDX]), STUB_VERSION) for t, m in zip(min_ts, means)]
 
 
@@ -141,8 +151,8 @@ def _remove(path: Path) -> None:
         pass
 
 
-def _read_bundle(tbp: Path, bad: Path, files: list[tuple[int, str]]) -> np.ndarray:
-    """Read the bundle's files; a file that fails to parse is moved to bad/ and skipped."""
+def _read_files(tbp: Path, bad: Path, files: list[tuple[int, str]]) -> np.ndarray:
+    """Read the files; a file that fails to parse is moved to bad/ and skipped."""
     rows = []
     for _, name in files:
         path = tbp / name
@@ -157,24 +167,29 @@ def _read_bundle(tbp: Path, bad: Path, files: list[tuple[int, str]]) -> np.ndarr
     return np.array(rows, dtype=np.float64).reshape(-1, N_COLS)
 
 
-def _process_bundle(cut: int, files: list[tuple[int, str]], tbp: Path, bad: Path,
-                    m_conn: sqlite3.Connection, i_conn: sqlite3.Connection) -> None:
-    rows = _read_bundle(tbp, bad, files)
+def _process_batch(start: int, end: int, files: list[tuple[int, str]], tbp: Path, bad: Path,
+                   m_conn: sqlite3.Connection, i_conn: sqlite3.Connection) -> None:
+    """One batch = whole bundles in [start, end): read, 1-min means, one processor call,
+    one commit per database, then delete the files."""
+    t0 = time.monotonic()
+    rows = _read_files(tbp, bad, files)
     n_min = 0
     if len(rows):
-        min_ts, means, n_rows = one_min_means(rows, cut)
+        min_ts, means, n_rows = one_min_means(rows, start, end)
         minute_rows = [(int(t), int(n)) + tuple(float(v) for v in m)
                        for t, n, m in zip(min_ts, n_rows, means)]
         _commit(m_conn, i_conn, minute_rows, process(min_ts, means))
         n_min = len(min_ts)
     for _, name in files:            # only after both commits
         _remove(tbp / name)
-    print(f"[OK      ] {ts_to_name(cut)[6:-4]}  rows {len(rows):3d}  minutes {n_min:2d}")
+    print(f"[OK      ] {ts_to_name(start)[6:-4]} → {ts_to_name(end)[6:-4]}"
+          f"  bundles {(end - start) // BUNDLE_S:3d}  rows {len(rows):6d}"
+          f"  minutes {n_min:5d}  {time.monotonic() - t0:.2f} s")
 
 
 # ── Main loop ─────────────────────────────────────────────────────────────────
 
-def run(demo_root: Path, poll_s: float) -> None:
+def run(demo_root: Path, scan_s: float, batch_max: int) -> None:
     tbp       = demo_root / 'to_be_processed'
     processed = demo_root / 'processed'
     bad       = demo_root / 'bad'
@@ -190,7 +205,7 @@ def run(demo_root: Path, poll_s: float) -> None:
         eos.unlink()
 
     cut = _resume_cut(m_conn, i_conn)
-    print(f"Reader started — {tbp}")
+    print(f"Reader started — {tbp}  (scan every {scan_s:g} s, batch ≤ {batch_max} bundles)")
     print(f"Next cut: {ts_to_name(cut)[6:-4] if cut is not None else 'from the oldest file'}")
 
     next_tick = time.monotonic()
@@ -201,24 +216,25 @@ def run(demo_root: Path, poll_s: float) -> None:
         if cut is None and files:
             cut = floor_bundle(files[0][0])
 
-        if cut is not None:
-            # Leftovers of a bundle committed before a crash: already in the databases.
+        if cut is not None and files:
+            # Leftovers of a batch committed before a crash: already in the databases.
             k = 0
             while k < len(files) and files[k][0] < cut:
                 _remove(tbp / files[k][1])
                 k += 1
             files = files[k:]
 
-            # Complete bundles (all remaining ones after EOS), back to back.
-            while files and (files[-1][0] >= cut + BUNDLE_S or finished):
-                end = cut + BUNDLE_S
+        if cut is not None and files:
+            # Everything below `limit` is complete: before the newest file's bundle, or all
+            # of it once EOS says no more rows are coming.
+            limit = floor_bundle(files[-1][0]) + (BUNDLE_S if finished else 0)
+            while files and files[0][0] < limit:
+                cut = max(cut, floor_bundle(files[0][0]))          # skip whole-bundle gaps
+                end = min(limit, cut + batch_max * BUNDLE_S)
                 k = 0
                 while k < len(files) and files[k][0] < end:
                     k += 1
-                if k == 0:                       # gap of whole bundles: jump to the next data
-                    cut = floor_bundle(files[0][0])
-                    continue
-                _process_bundle(cut, files[:k], tbp, bad, m_conn, i_conn)
+                _process_batch(cut, end, files[:k], tbp, bad, m_conn, i_conn)
                 files = files[k:]
                 cut = end
 
@@ -226,10 +242,10 @@ def run(demo_root: Path, poll_s: float) -> None:
             print("EOS and nothing left — reader done.")
             break
 
-        next_tick += poll_s
+        next_tick += scan_s
         now = time.monotonic()
         if next_tick <= now:                     # overran: skip missed ticks, stay on the grid
-            next_tick += (int((now - next_tick) // poll_s) + 1) * poll_s
+            next_tick += (int((now - next_tick) // scan_s) + 1) * scan_s
         time.sleep(next_tick - now)
 
     m_conn.close()
@@ -238,11 +254,16 @@ def run(demo_root: Path, poll_s: float) -> None:
 
 def main() -> None:
     import argparse
-    ap = argparse.ArgumentParser(description='Renze backend reader (v2, stub processor)')
+    ap = argparse.ArgumentParser(description='Renze backend reader (v2.1, batched scans, stub processor)')
     ap.add_argument('--demo-root', type=Path, default=DEFAULT_DEMO_ROOT)
-    ap.add_argument('--poll', type=float, default=POLL_S, metavar='SECS')
+    ap.add_argument('--scan', type=float, default=SCAN_S, metavar='SECS',
+                    help='wall seconds between scans (default 900; C9 demo: 0.1)')
+    ap.add_argument('--batch-max', type=int, default=BATCH_MAX, metavar='N',
+                    help='bundles per batch (default 96 = one data day)')
     args = ap.parse_args()
-    run(args.demo_root, args.poll)
+    if args.scan <= 0 or args.batch_max < 1:
+        ap.error('--scan must be > 0 and --batch-max >= 1')
+    run(args.demo_root, args.scan, args.batch_max)
 
 
 if __name__ == '__main__':
