@@ -1,4 +1,17 @@
-/demo_root/
+# Python / editor / OS
 __pycache__/
-.DS_Store
 .venv/
+.DS_Store
+
+# Runtime data: recreated on every demo run, or built from scripts in backend/
+/demo_root/
+/demo_assets/
+
+# Machine-specific settings and local backups
+backend/renze_paths.json
+backend/_archive*/
+
+# SQLite databases and their WAL side files, wherever they land
+*.db
+*.db-wal
+*.db-shm

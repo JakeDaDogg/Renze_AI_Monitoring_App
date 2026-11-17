@@ -76,6 +76,11 @@ def floor_bundle(ts: int) -> int:
     return int(ts) - int(ts) % BUNDLE_S
 
 
+def floor_minute(ts: int) -> int:
+    """Start of the minute that contains ts."""
+    return int(ts) - int(ts) % MIN_S
+
+
 # ── Write ─────────────────────────────────────────────────────────────────────
 
 def write_row(path: Path, row: np.ndarray) -> None:
