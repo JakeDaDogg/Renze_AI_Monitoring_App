@@ -1,0 +1,9 @@
+# Backend Python packages (venv: backend/.venv, Python per backend/.python-version).
+# Trimmed from `pip freeze` of backend/.venv to what the code imports; pip pulls the rest.
+numpy==2.5.4          # all modules
+pandas==3.1.1         # _parked/backfill.py: reads the series6 pandas Timestamps
+matplotlib==3.11.2    # viewer.py
+
+# RUL models (not wired into reader.process() yet). TensorFlow 2.12 supports Python <= 3.11,
+# so it cannot be installed in this 3.13 venv; decide the Python/TF pairing in the model ticket.
+# tensorflow==2.12.*
