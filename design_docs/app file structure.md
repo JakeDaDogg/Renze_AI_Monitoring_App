@@ -71,6 +71,9 @@ Outside the repo, read only: `~/Desktop/BALA/AI_for_Renze` (source data `08-Data
 ### model_training_history/
 - Copies of the pipe and HXG RUL training notebooks.
 
+## Runs
+- 2026-11-18, C9, Mac (backend/.venv, Python 3.13): `build_demo_assets.py` → 362,880 rows, 79 MB. 3 min (2,016 files/s) and 5 min (1,210 files/s): reader kept up (backlog max 151 / 88 files), 30,240 minutes, 30,226 inference rows (first 14 minutes: window not fillable), 0 files in `bad/`, writer and reader exit 0; `viewer.py` reads the v3 `inference` table.
+
 ## Change log
 - 2026-11-18 — housekeeping #1: file created in the repo (drafted from the repo state; merge with the claude.ai project copy by hand).
 - 2026-11-18 — housekeeping #2: README rewritten.
@@ -78,3 +81,4 @@ Outside the repo, read only: `~/Desktop/BALA/AI_for_Renze` (source data `08-Data
 - 2026-11-18 — housekeeping #4: `backfill.py` parked in `backend/_parked/`, imports fixed, `--dry-run` checked (672,999 minutes, 287,411 with data).
 - 2026-11-18 — housekeeping #5: root `.venv/` and `.python-version` removed; `backend/requirements.txt` added.
 - 2026-11-18 — housekeeping #6: `demo_assets/` layout (models + C9 data copied from AI_for_Renze, ignored), `MANIFEST.md` tracked, `check_assets.py`, `paths.ASSETS/MODELS`, default sources point at `demo_assets/data/`.
+- 2026-11-18 — housekeeping #7: first real C9 run on the Mac (see Runs).
