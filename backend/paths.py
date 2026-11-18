@@ -41,6 +41,15 @@ def preselect_schema(mode: str) -> str:
     return name
 
 
+MODEL_FILES = ('pipe_rul_v3_traindev.weights.h5', 'pipe_rul_v3_traindev_scaler.pkl',
+               'hxg_rul_v3_traindev.weights.h5', 'hxg_rul_v3_traindev_scaler.pkl')
+
+
+def missing_models() -> list[str]:
+    """Model files absent from demo_assets/models/ (see demo_assets/MANIFEST.md)."""
+    return [f for f in MODEL_FILES if not (MODELS / f).exists()]
+
+
 def resolve_root(mode: str, override: Path | None = None) -> Path:
     if mode not in MODES:
         raise SystemExit(f'mode must be one of {MODES}, got {mode!r}')

@@ -1,8 +1,13 @@
 """
 replay_agent.py — Renze demo writer (v3). Demo mode only; never touches production.
 
-Replays the cycle 9 window as one CSV per 5-s row into demo_root/to_be_processed/
-(contract in packet_io.py), paced by the speed scale (data time / wall time).
+Replays a source as one CSV per 5-s row into demo_root/to_be_processed/ (contract in
+packet_io.py), paced by the speed scale (data time / wall time). The source follows the sensor
+schema (RENZE_SCHEMA, default synth15 here):
+  - synth15: demo_assets/synthetic/renze_synth_c456_v1.npz, whole file (in git);
+  - full49:  the C9 window, demo_assets/c9_window.npz or demo_assets/data/ (internal), e.g.
+             RENZE_SCHEMA=full49 python replay_agent.py --source ../demo_assets/data/series6_cycle_9_converted.npy
+             (and RENZE_SCHEMA=full49 for the reader too).
 
 On start (unless --keep):
   - demo_root is replaced by a fresh, empty one (the demo database is never reused);
@@ -18,7 +23,8 @@ Usage:
     python replay_agent.py [--run-minutes 5 | --scale N] [--source PATH]
                            [--start T] [--end T] [--drop-range A:B] [--bad-range A:B]
                            [--keep] [--dry-run]
-    T = YYYYMMDDTHHMMSSZ (UTC).  --drop-range: rows never written (source gap).
+    T = YYYYMMDDTHHMMSSZ (UTC); default: the whole synthetic file (synth15) or the C9 window (full49).
+    --drop-range: rows never written (source gap).
     --bad-range: rows written as unparseable files (tests forward fill / data error).
 """
 from __future__ import annotations
@@ -38,9 +44,9 @@ from paths import ASSETS, DEMO_ROOT, layout, preselect_schema, resolve_root
 
 preselect_schema('demo')        # synth15 unless RENZE_SCHEMA is set (e.g. full49 for the C9 replay)
 
-from packet_io import ROW_S, SCHEMA_NAME, ts_to_name, write_row  # noqa: E402
+from packet_io import N_COLS, RAW_SENSOR_COLS, ROW_S, SCHEMA_NAME, ts_to_name, write_row  # noqa: E402
 
-WINDOW_START = '20260427T000000Z'
+WINDOW_START = '20260427T000000Z'  # C9 window (full49)
 WINDOW_END   = '20260518T000000Z'
 DEFAULT_RUN_MINUTES = 5.0          # whole window in 5 min of wall time (≈ 6,048×)
 MIN_RUN_MINUTES = 3.0              # fastest allowed (≈ 10,080×)
@@ -49,6 +55,7 @@ PROGRESS_DATA_S = 86_400           # one console line per data day
 
 DEMO_ASSET = ASSETS / 'c9_window.npz'
 FALLBACK_SOURCE = ASSETS / 'data' / 'series6_cycle_9_converted.npy'
+SYNTH_SOURCE = ASSETS / 'synthetic' / 'renze_synth_c456_v1.npz'
 SEE_MANIFEST = 'see demo_assets/MANIFEST.md'
 
 
@@ -71,18 +78,50 @@ def parse_range(spec: str) -> tuple[int, int]:
     return lo, hi
 
 
+def default_sources() -> list[Path]:
+    return [SYNTH_SOURCE] if SCHEMA_NAME == 'synth15' else [DEMO_ASSET, FALLBACK_SOURCE]
+
+
 def load_source(path: Path | None) -> tuple[np.ndarray, Path]:
-    """The demo asset (npz, key 'data') or a converted .npy; 50 columns, col 0 = epoch s."""
-    for p in ([path] if path else [DEMO_ASSET, FALLBACK_SOURCE]):
-        if p is not None and p.exists():
-            if p.suffix == '.npz':
-                with np.load(p) as z:
-                    return z['data'], p
-            return np.load(p, mmap_mode='r'), p
-    if path:
-        raise SystemExit(f'source not found: {path} ({SEE_MANIFEST})')
-    raise SystemExit(f'no source found: build {DEMO_ASSET.name} with build_demo_assets.py from '
-                     f'{FALLBACK_SOURCE} or pass --source ({SEE_MANIFEST})')
+    """
+    A source with col 0 = epoch s, then the active schema's sensors (N_COLS columns):
+    npz with 'ts' + 'X' (+ 'columns') — the synthetic file; npz with 'data' — c9_window.npz;
+    or a converted .npy.
+    """
+    for p in ([path] if path else default_sources()):
+        if p.exists():
+            break
+    else:
+        if path:
+            raise SystemExit(f'source not found: {path} ({SEE_MANIFEST})')
+        if SCHEMA_NAME == 'synth15':
+            raise SystemExit(f'source not found: {SYNTH_SOURCE} ({SEE_MANIFEST})')
+        raise SystemExit(f'no source found: build {DEMO_ASSET.name} with build_demo_assets.py from '
+                         f'{FALLBACK_SOURCE} or pass --source ({SEE_MANIFEST})')
+    cols = None
+    if p.suffix == '.npz':
+        with np.load(p) as z:
+            if 'X' in z.files:
+                arr = np.column_stack([z['ts'].astype(np.float64), z['X'].astype(np.float64)])
+                cols = [str(c) for c in z['columns']] if 'columns' in z.files else None
+            else:
+                arr = z['data']
+    else:
+        arr = np.load(p, mmap_mode='r')
+    if arr.ndim != 2 or arr.shape[1] != N_COLS:
+        raise SystemExit(f'{p.name} has {arr.shape[1] - 1 if arr.ndim == 2 else "?"} sensor columns, '
+                         f'the active schema {SCHEMA_NAME!r} has {N_COLS - 1}: '
+                         f'set RENZE_SCHEMA to match the source (synth15 or full49)')
+    if cols is not None and cols != RAW_SENSOR_COLS:
+        raise SystemExit(f'{p.name} columns {cols} differ from schema {SCHEMA_NAME!r}')
+    return arr, p
+
+
+def default_window(arr: np.ndarray) -> tuple[int, int]:
+    """synth15: the whole file; full49: the C9 window."""
+    if SCHEMA_NAME == 'synth15':
+        return int(arr[0, 0]), int(arr[-1, 0]) + ROW_S
+    return parse_utc(WINDOW_START), parse_utc(WINDOW_END)
 
 
 def write_json(path: Path, obj: dict) -> None:
@@ -101,6 +140,9 @@ def fresh_demo_root(root: Path) -> None:
 
 def run(args: argparse.Namespace) -> None:
     arr, src = load_source(args.source)
+    d_start, d_end = default_window(arr)
+    args.start = d_start if args.start is None else args.start
+    args.end = d_end if args.end is None else args.end
     ts_col = arr[:, 0]
     r0 = int(np.searchsorted(ts_col, args.start, side='left'))
     r1 = int(np.searchsorted(ts_col, args.end, side='left'))
@@ -117,7 +159,7 @@ def run(args: argparse.Namespace) -> None:
     if scale < 1:
         raise SystemExit('scale must be >= 1 (1 = real time)')
     rate = scale / ROW_S
-    print(f"Source {src.name}: rows {r0}–{r1} ({n:,} files), scale {scale:,.0f}× "
+    print(f"Source {src.name} [{SCHEMA_NAME}]: rows {r0}–{r1} ({n:,} files), scale {scale:,.0f}× "
           f"→ {rate:,.0f} files/s, ≈ {data_s / scale / 60:.1f} min")
     if args.dry_run:
         return
@@ -183,9 +225,12 @@ def run(args: argparse.Namespace) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser(description='Renze demo writer (v3)')
     ap.add_argument('--source', type=Path, default=None,
-                    help=f'default: {DEMO_ASSET.name}, else the converted cycle 9 .npy')
-    ap.add_argument('--start', type=parse_utc, default=parse_utc(WINDOW_START))
-    ap.add_argument('--end', type=parse_utc, default=parse_utc(WINDOW_END))
+                    help=f'default: {SYNTH_SOURCE.name} (synth15); {DEMO_ASSET.name}, '
+                         f'else the converted cycle 9 .npy (full49)')
+    ap.add_argument('--start', type=parse_utc, default=None,
+                    help='default: first row (synth15) or the C9 window start (full49)')
+    ap.add_argument('--end', type=parse_utc, default=None,
+                    help='default: after the last row (synth15) or the C9 window end (full49)')
     ap.add_argument('--run-minutes', type=float, default=DEFAULT_RUN_MINUTES,
                     help='wall minutes for the whole window (default 5, fastest 3)')
     ap.add_argument('--scale', type=float, default=None, help='data/wall time; overrides --run-minutes')

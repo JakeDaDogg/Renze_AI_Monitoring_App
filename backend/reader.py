@@ -35,7 +35,7 @@ from pathlib import Path
 
 import numpy as np
 
-from paths import layout, preselect_schema, resolve_root
+from paths import layout, missing_models, preselect_schema, resolve_root
 
 
 def _pre_mode() -> str:
@@ -372,6 +372,9 @@ def main() -> None:
                        args.scale, args.resume)
     if scale < 1:
         raise SystemExit('scale must be >= 1')
+    if missing := missing_models():
+        print(f"Note: model files missing ({', '.join(missing)}), see demo_assets/MANIFEST.md; "
+              f"process() is still the stub and does not need them yet.")
     raise SystemExit(Reader(args.mode, root, scale, args.resume).run())
 
 

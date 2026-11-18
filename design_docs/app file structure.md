@@ -16,8 +16,8 @@ AI_Monitor_App/
 │   ├── paths.py                    data roots: demo_root/ (demo) or the named prod root
 │   ├── packet_io.py                file contract: one CSV per 5-s row; sensor schemas full49 / synth15
 │   ├── db.py                       SQLite schema for minutes.db and inference.db
-│   ├── replay_agent.py             demo writer: replays the C9 window into to_be_processed/
-│   ├── build_demo_assets.py        cuts the C9 window into demo_assets/c9_window.npz
+│   ├── replay_agent.py             demo writer: replays the synthetic file (synth15) or C9 (full49)
+│   ├── build_demo_assets.py        full49 only: cuts the C9 window into demo_assets/c9_window.npz
 │   ├── check_assets.py             compares local demo_assets/ files with MANIFEST.md hashes
 │   ├── reader.py                   reader: minutes track + inference track (process() is a stub)
 │   ├── viewer.py                   live plot of inference.db (read-only)
@@ -58,16 +58,16 @@ Outside the repo, read only: `~/Desktop/BALA/AI_for_Renze` (source data `08-Data
 
 ### backend/
 - `.venv/`, `.python-version`, `requirements.txt` — the one Python environment. `pip install -r backend/requirements.txt`. TensorFlow 2.12 (RUL models) needs Python ≤ 3.11 and is listed as a comment only.
-- `paths.py` — `resolve_root(mode)`: demo → `<app>/demo_root`; prod → `--root`, `RENZE_PROD_ROOT` or `backend/renze_paths.json`, never defaulted; refuses overlap with the demo root. `preselect_schema(mode)`. `ASSETS` = `<app>/demo_assets`, `MODELS` = `ASSETS/models`, `MANIFEST`. `layout(root)` creates `to_be_processed/ (.tmp/) processed/ bad/ control/`.
+- `paths.py` — `resolve_root(mode)`: demo → `<app>/demo_root`; prod → `--root`, `RENZE_PROD_ROOT` or `backend/renze_paths.json`, never defaulted; refuses overlap with the demo root. `preselect_schema(mode)`. `ASSETS` = `<app>/demo_assets`, `MODELS` = `ASSETS/models`, `MANIFEST`, `missing_models()`. `layout(root)` creates `to_be_processed/ (.tmp/) processed/ bad/ control/`.
 - `packet_io.py` — contract: `renze_YYYYMMDDTHHMMSSZ.csv`, header `ts,<sensors>`, one data line, 9 significant digits, published via `.tmp/` + `os.replace`. `ROW_S=5`, `MIN_S=60`, `BUNDLE_S=900`.
   - Sensor schema, chosen once per process from `RENZE_SCHEMA`: `full49` (production: 49 sensors, PT104S last) or `synth15` (demo only: the 11 model sensors + TT203, LV102, PT106, PT105; no PT104S). Entry scripts set the mode default with `paths.preselect_schema(mode)` before importing `packet_io`/`db` (demo → synth15, prod → full49); unset everywhere → full49.
   - Derived by name: `RAW_SENSOR_COLS`, `CANON_SENSOR_COLS` (minus PT104S: 48 / 15), `VCB2_IDX`, `MODEL_FEAT_INDICES` (in `MODEL_FEAT_COLS` order), `N_COLS` (50 / 16), `HEADER`. With full49 all are identical to the values before the switch (`tests/test_schema.py`).
 - `db.py` — `minutes` (ts, ts_utc, n_rows, n_filled, 48 sensors) and `inference` (ts, ts_utc, vcb2_x2, saved_power, model_version) tables (sensor columns = the active `CANON_SENSOR_COLS`), WAL; `db_info` holds mode, schema version and `sensor_schema`; a DB of another mode or sensor schema is refused.
-- `replay_agent.py` — demo writer. Resets `demo_root/`, locks the speed scale in `control/speed.json`, writes one CSV per 5-s row, heartbeat in `control/writer_status.json`. Schema default synth15; `speed.json` records the schema and the reader refuses a writer of another schema. Default window 2026-04-27 → 2026-05-18 (C9), `--run-minutes` 5 (min 3). Source: `demo_assets/c9_window.npz`, else `demo_assets/data/series6_cycle_9_converted.npy`, or `--source`; missing → "see demo_assets/MANIFEST.md".
-- `build_demo_assets.py` — cuts the C9 window from the converted `.npy` (default `demo_assets/data/`, `--source` overridable) into `demo_assets/c9_window.npz`.
+- `replay_agent.py` — demo writer. Resets `demo_root/`, locks the speed scale in `control/speed.json`, writes one CSV per 5-s row, heartbeat in `control/writer_status.json`. Schema default synth15; `speed.json` records the schema and the reader refuses a writer of another schema. `--run-minutes` 5 (min 3). Default source by schema: synth15 → `demo_assets/synthetic/renze_synth_c456_v1.npz`, whole file; full49 → `demo_assets/c9_window.npz`, else `demo_assets/data/series6_cycle_9_converted.npy`, window 2026-04-27 → 2026-05-18. `--source/--start/--end` override. A source whose column count differs from the schema → error naming both; missing file → "see demo_assets/MANIFEST.md".
+- `build_demo_assets.py` — `RENZE_SCHEMA=full49`: cuts the C9 window from the converted `.npy` (default `demo_assets/data/`, `--source` overridable) into `demo_assets/c9_window.npz`. Under synth15 there is nothing to build: it checks the synthetic file and exits.
 - `tools/make_synthetic_demo.py` — builds the synthetic demo data (runs once on Yuhan's Mac; inputs `series6_cycle_{4,5,6}_raw.npy`, `RENZE_SERIES6_DIR`). Last 10 operating days before each cleaning date (notebook dates), aligned, each 5-s row a Dirichlet(1,1,1)-weighted mix of C4/C5/C6, 1-h shutdown tail, ts from 2000-01-01T00:00:00Z. Method in `demo_assets/synthetic/README.md`.
 - `check_assets.py` — hashes the local demo assets against `MANIFEST.md`, prints ok / MISSING / MISMATCH, exit 1 if any.
-- `reader.py` — `--mode demo|prod` (also picks the schema default). Averages 12 rows into a 1-min sample (`minutes.db`), scores 15-min windows with `process()` (`inference.db`). `process()` is a stub (2 × VCB2-Power).
+- `reader.py` — `--mode demo|prod` (also picks the schema default). Prints a note pointing at the MANIFEST if model files are missing (the stub does not need them). Averages 12 rows into a 1-min sample (`minutes.db`), scores 15-min windows with `process()` (`inference.db`). `process()` is a stub (2 × VCB2-Power).
 - `viewer.py` — matplotlib live plot of `inference.vcb2_x2`, read-only connection.
 - `_parked/backfill.py` — parked (tracked; `.gitignore` only drops `backend/_archive*/`). Forces `full49`. Production history from series6 cycles 1–8, zero placeholder rows for gaps. Adds `backend/` to `sys.path`, so `python backend/_parked/backfill.py --dry-run` works from any folder.
 - `maint_recovery.py` + `maint_recovery_v0.json` — recovered kWh from cleaning tomorrow; sensors TT203, PT100, PT105, LIT101, PT106, LV102.
@@ -99,3 +99,4 @@ Outside the repo, read only: `~/Desktop/BALA/AI_for_Renze` (source data `08-Data
 - 2026-11-18 — synth #1: `demo_assets/models/` (4 files, 146 KB) and `demo_assets/synthetic/` tracked; MANIFEST says what is in git.
 - 2026-11-18 — synth #2: sensor schema switch (`full49` / `synth15`, `RENZE_SCHEMA`) in `packet_io.py`; `db_info.sensor_schema`; backfill forces full49; `tests/test_schema.py`.
 - 2026-11-18 — synth #3: `tools/make_synthetic_demo.py`; `demo_assets/synthetic/renze_synth_c456_v1.npz` (173,520 × 15, 9.2 MB) + README; MANIFEST row.
+- 2026-11-18 — synth #4: demo defaults to the synthetic file under synth15 (whole file); column-count check; C9 needs `RENZE_SCHEMA=full49`; `build_demo_assets.py` is full49-only.
