@@ -1,11 +1,15 @@
 """
 backfill.py — build the production minutes.db history from cleaned series6 cycles 1–8.
 
-Production only (the demo database never holds history). Run once on the production machine:
+PARKED (2026-11-17): not part of the C9 demo. Kept here, tracked, until the production backfill
+decision is made. It imports paths, db and packet_io from backend/ (one level up).
+
+Production only (the demo database never holds history). Run once on the production machine,
+from backend/:
 
     pip install pandas                      # the series6 files store pandas Timestamps
-    python backfill.py --root /path/to/prod_root          # or RENZE_PROD_ROOT / renze_paths.json
-    python backfill.py --root ... --dry-run               # counts only, writes nothing
+    python _parked/backfill.py --root /path/to/prod_root   # or RENZE_PROD_ROOT / renze_paths.json
+    python _parked/backfill.py --root ... --dry-run        # counts only, writes nothing
 
 - Source: <data-dir>/series6_cycle_{1..8}_raw.npy (col 0 = datetime, then the canonical 48 sensors),
   sampled every 30–60 s, downtime and rows below 300 kW already removed.
@@ -19,9 +23,12 @@ Production only (the demo database never holds history). Run once on the product
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 import numpy as np
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))   # backend/: paths, db, packet_io
 
 from db import INSERT_MINUTE, MINUTE_COLS, open_db
 from packet_io import CANON_SENSOR_COLS, MIN_S, ts_to_name

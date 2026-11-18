@@ -21,7 +21,8 @@ AI_Monitor_App/
 │   ├── build_demo_assets.py        cuts the C9 window into demo_assets/c9_window.npz
 │   ├── reader.py                   reader: minutes track + inference track (process() is a stub)
 │   ├── viewer.py                   live plot of inference.db (read-only)
-│   ├── backfill.py                 production: minutes.db history from series6 cycles 1–8
+│   ├── _parked/
+│   │   └── backfill.py             parked: production minutes.db history (series6 cycles 1–8)
 │   ├── maint_recovery.py           daily maintenance decision (recovered kWh), not wired yet
 │   ├── maint_recovery_v0.json      coefficients for maint_recovery.py
 │   └── renze_paths.json            machine-specific prod root (ignored)
@@ -52,7 +53,7 @@ Outside the repo, read only: `~/Desktop/BALA/AI_for_Renze` (source data `08-Data
 - `build_demo_assets.py` — cuts the C9 window from the converted `.npy` into `demo_assets/c9_window.npz`.
 - `reader.py` — `--mode demo|prod`. Averages 12 rows into a 1-min sample (`minutes.db`), scores 15-min windows with `process()` (`inference.db`). `process()` is a stub (2 × VCB2-Power).
 - `viewer.py` — matplotlib live plot of `inference.vcb2_x2`, read-only connection.
-- `backfill.py` — production history from series6 cycles 1–8, zero placeholder rows for gaps.
+- `_parked/backfill.py` — parked (tracked; `.gitignore` only drops `backend/_archive*/`). Production history from series6 cycles 1–8, zero placeholder rows for gaps. Adds `backend/` to `sys.path`, so `python backend/_parked/backfill.py --dry-run` works from any folder.
 - `maint_recovery.py` + `maint_recovery_v0.json` — recovered kWh from cleaning tomorrow; sensors TT203, PT100, PT105, LIT101, PT106, LV102.
 
 ### design_docs/
@@ -65,3 +66,4 @@ Outside the repo, read only: `~/Desktop/BALA/AI_for_Renze` (source data `08-Data
 - 2026-11-18 — housekeeping #1: file created in the repo (drafted from the repo state; merge with the claude.ai project copy by hand).
 - 2026-11-18 — housekeeping #2: README rewritten.
 - 2026-11-18 — housekeeping #3: root `renze_paths.json` deleted (untracked placeholder; `paths.py` reads `backend/renze_paths.json` only).
+- 2026-11-18 — housekeeping #4: `backfill.py` parked in `backend/_parked/`, imports fixed, `--dry-run` checked (672,999 minutes, 287,411 with data).
