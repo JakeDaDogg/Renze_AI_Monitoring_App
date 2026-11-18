@@ -11,15 +11,9 @@ supports the daily maintenance (cleaning) decision.
 ## Layout
 
 ```
-backend/                 Python backend: writer, reader, schema, viewer, tools/ (own venv: backend/.venv)
-frontend/                planned: Next.js dashboard (own package.json / node_modules)
-demo_assets/             demo inputs: models + synthetic data (in git), C9 data (internal)
-design_docs/             design doc, file structure reference, tickets
-model_training_history/  RUL model training notebooks (record only)
+backend/       Python backend: writer, reader, schema, viewer (own venv: backend/.venv)
+demo_assets/   demo inputs: RUL models + synthetic data (in git), C9 data (internal, not in git)
 ```
-
-Full file-by-file reference: [design_docs/app file structure.md](design_docs/app%20file%20structure.md).
-Design: [design_docs/Renze backend v3 — C9 replay demo and backend design.md](design_docs/Renze%20backend%20v3%20%E2%80%94%20C9%20replay%20demo%20and%20backend%20design.md).
 
 ## Run the demo
 
@@ -29,7 +23,7 @@ are in the repo, so a clone is enough.
 
 ```bash
 git clone <repo> AI_Monitor_App && cd AI_Monitor_App/backend
-python3 -m venv .venv && source .venv/bin/activate      # Python version: backend/.python-version
+python3 -m venv .venv && source .venv/bin/activate      # Python 3.10 or newer
 pip install -r requirements.txt
 
 python replay_agent.py --run-minutes 3    # terminal 1: writer (resets demo_root/), 10 days + 1 h of data in 3 min
@@ -46,10 +40,83 @@ Needs `demo_assets/data/series6_cycle_9_converted.npy` (internal, on request, se
 [demo_assets/MANIFEST.md](demo_assets/MANIFEST.md)). Run writer and reader with the same schema:
 
 ```bash
-RENZE_SCHEMA=full49 python build_demo_assets.py           # once: demo_assets/c9_window.npz
 RENZE_SCHEMA=full49 python replay_agent.py --run-minutes 3
 RENZE_SCHEMA=full49 python reader.py --mode demo
 ```
 
-`python check_assets.py` compares your `demo_assets/` with the MANIFEST hashes.
+To check file hashes against the MANIFEST: `shasum -a 256 ../demo_assets/models/* ../demo_assets/synthetic/*.npz`.
 Demo and production never share a data root (`backend/paths.py`).
+
+## Run the backend in isolation (manual inspection)
+
+For watching each step and testing outages by hand. Run every script from `backend/` in its venv,
+one terminal per script. Recommended writer scale for visual inspection: **180** (3 data minutes
+per wall second).
+
+### Config per script
+
+**Writer — `replay_agent.py`** (terminal 1, always start first)
+
+```bash
+python replay_agent.py --scale 180 --end 20000102T000000Z
+```
+
+| Flag | Value | Effect |
+|---|---|---|
+| `--scale` | `180` | Data time / wall time; overrides `--run-minutes` |
+| `--end` | `20000102T000000Z` | Stops after the first synthetic data day (≈ 8 min wall). Omit it for the whole file (10 d + 1 h, ≈ 80 min) |
+
+Wait for its `Source …` line before starting the reader.
+
+**Reader — `reader.py`** (terminal 2)
+
+```bash
+python reader.py --mode demo --scale 10
+```
+
+| Flag | Value | Effect |
+|---|---|---|
+| `--mode` | `demo` | Demo root and the `synth15` schema |
+| `--scale` | `10` | Scans every 6 s and tolerates 6 min of writer silence (3600 / 10 s). Changes polling only, not results |
+| `--resume` | — | Add when restarting the reader mid-run |
+
+With `--scale`, the reader does not wait for a running writer. Start it after the writer, or the
+writer's reset deletes `demo_root/` underneath it.
+
+**Viewer — `viewer.py`** (terminal 3, optional)
+
+```bash
+python viewer.py
+```
+
+Defaults: 24 h rolling window, 200 ms refresh, times shown as stored (`UTC`). The viewer does not
+exit when the writer stops: close the window or press Ctrl-C.
+
+### Scenarios
+
+**1. All three running together**
+
+1. Terminal 1: start the writer; wait for its `Source …` line.
+2. Terminal 2: start the reader.
+3. Terminal 3: start the viewer.
+
+**2. Writer down, reader keeps reading**
+
+1. Terminal 1: press **Ctrl-Z**. The writer freezes; the reader keeps scanning and finds nothing new.
+2. Terminal 1: type **`fg`** within 6 minutes. The writer first writes the rows it missed, then
+   returns to its normal pace. The reader catches up without a restart.
+
+Use Ctrl-Z, not Ctrl-C: Ctrl-C sets the writer status to `stopped` and the reader exits on that.
+A pause longer than 6 minutes also ends the reader. Either way, restart it as in scenario 3.
+
+**3. Reader down, writer keeps writing**
+
+1. Terminal 2: press **Ctrl-C**. The writer keeps going and files pile up. To watch the backlog:
+   ```bash
+   ls ../demo_root/to_be_processed | wc -l
+   ```
+2. Terminal 2: restart the reader:
+   ```bash
+   python reader.py --mode demo --scale 10 --resume
+   ```
+   It continues from the last committed minute and works through the backlog.

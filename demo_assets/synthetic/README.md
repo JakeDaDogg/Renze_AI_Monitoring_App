@@ -5,7 +5,7 @@ cleaned operating cycles (C4, C5, C6) of the Renze plant. No real plant row is i
 It exists only so that anyone with the repo can run the demo; production reads real 5-s plant
 data with all 49 sensors (`full49`).
 
-Built by `backend/tools/make_synthetic_demo.py` (seed 0) on 2026-11-18.
+Built by an internal generator (not in this repo), seed 0, on 2026-11-18.
 
 ## Contents
 

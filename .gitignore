@@ -21,3 +21,14 @@ backend/_archive*/
 
 # Synthetic data generator: needs internal series6 data; the output npz is tracked, the tool is not
 backend/tools/make_synthetic_demo.py
+
+# Kept locally, not in the repo (2026-11-18): helpers, internal tools, docs and history
+backend/tests/
+backend/check_assets.py
+backend/build_demo_assets.py
+backend/_parked/
+backend/maint_recovery.py
+backend/maint_recovery_v0.json
+design_docs/
+model_training_history/
+/2026-11-17_*.md
