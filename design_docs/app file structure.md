@@ -7,7 +7,7 @@ Scope today: the C9 replay demo. Production comes later through the same reader/
 
 ```
 AI_Monitor_App/
-├── README.md                       purpose, layout, demo run order
+├── README.md                       purpose, layout, Run the demo (synthetic) + internal C9 run
 ├── .gitignore
 ├── backend/
 │   ├── .python-version             Python version for backend/.venv (3.13)
@@ -52,7 +52,7 @@ Outside the repo, read only: `~/Desktop/BALA/AI_for_Renze` (source data `08-Data
 ## Entries
 
 ### Root
-- `README.md` — purpose (C9 replay demo now, production later), layout, demo run order, links to this file and the design doc.
+- `README.md` — purpose (replay demo now, production later), layout, "Run the demo" (clone → venv → `pip install -r backend/requirements.txt` → writer, reader, viewer; states the data is synthetic), internal C9 run with `RENZE_SCHEMA=full49`, links to this file, the design doc and the MANIFEST.
 - `.gitignore` — ignores venvs, `__pycache__`, `.DS_Store`, `/demo_root/`, `/demo_assets/*` except `MANIFEST.md`, `models/`, `synthetic/`, `backend/renze_paths.json`, `backend/_archive*/`, `*.db*`.
 - No Python files at the root: it stays language-neutral so `frontend/` (Next.js) can sit beside `backend/` with its own `package.json` / `node_modules/`.
 
@@ -103,3 +103,4 @@ Outside the repo, read only: `~/Desktop/BALA/AI_for_Renze` (source data `08-Data
 - 2026-11-18 — synth #3: `tools/make_synthetic_demo.py`; `demo_assets/synthetic/renze_synth_c456_v1.npz` (173,520 × 15, 9.2 MB) + README; MANIFEST row.
 - 2026-11-18 — synth #4: demo defaults to the synthetic file under synth15 (whole file); column-count check; C9 needs `RENZE_SCHEMA=full49`; `build_demo_assets.py` is full49-only.
 - 2026-11-18 — synth #5: end-to-end runs, synthetic and C9 full49 (see Runs).
+- 2026-11-18 — synth #6: README "Run the demo" section; structure doc covers tracked `models/` + `synthetic/`, `tools/make_synthetic_demo.py`, the schema switch.
