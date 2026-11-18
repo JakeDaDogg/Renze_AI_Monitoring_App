@@ -7,6 +7,8 @@ __pycache__/
 /demo_root/
 /demo_assets/*
 !/demo_assets/MANIFEST.md
+!/demo_assets/models/
+!/demo_assets/synthetic/
 
 # Machine-specific settings and local backups
 backend/renze_paths.json

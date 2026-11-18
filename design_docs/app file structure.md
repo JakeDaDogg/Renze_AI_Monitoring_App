@@ -28,10 +28,11 @@ AI_Monitor_App/
 │   └── renze_paths.json            machine-specific prod root (ignored)
 ├── frontend/ [planned]             Next.js dashboard, own package.json / node_modules/
 ├── demo_root/                      runtime, recreated by every demo run (ignored)
-├── demo_assets/                    demo inputs; only MANIFEST.md is tracked
+├── demo_assets/                    demo inputs; MANIFEST.md, models/, synthetic/ tracked
 │   ├── MANIFEST.md                 tracked: what to request, target path, size, sha256
-│   ├── models/                     ignored: pipe/hxg_rul_v3_traindev .weights.h5 + _scaler.pkl
-│   ├── data/                       ignored: series6_cycle_9_converted.npy (415 MB)
+│   ├── models/                     tracked: pipe/hxg_rul_v3_traindev .weights.h5 + _scaler.pkl
+│   ├── synthetic/                  tracked: synthetic demo data (see synth #3)
+│   ├── data/                       ignored, internal: series6_cycle_9_converted.npy (415 MB)
 │   └── c9_window.npz               ignored: built by build_demo_assets.py
 ├── design_docs/
 │   ├── app file structure.md       this file
@@ -47,7 +48,7 @@ Outside the repo, read only: `~/Desktop/BALA/AI_for_Renze` (source data `08-Data
 
 ### Root
 - `README.md` — purpose (C9 replay demo now, production later), layout, demo run order, links to this file and the design doc.
-- `.gitignore` — ignores venvs, `__pycache__`, `.DS_Store`, `/demo_root/`, `/demo_assets/*` except `MANIFEST.md`, `backend/renze_paths.json`, `backend/_archive*/`, `*.db*`.
+- `.gitignore` — ignores venvs, `__pycache__`, `.DS_Store`, `/demo_root/`, `/demo_assets/*` except `MANIFEST.md`, `models/`, `synthetic/`, `backend/renze_paths.json`, `backend/_archive*/`, `*.db*`.
 - No Python files at the root: it stays language-neutral so `frontend/` (Next.js) can sit beside `backend/` with its own `package.json` / `node_modules/`.
 
 ### backend/
@@ -67,7 +68,7 @@ Outside the repo, read only: `~/Desktop/BALA/AI_for_Renze` (source data `08-Data
 - Next.js dashboard beside `backend/`; reads the backend's databases/API (design doc §2.5). Not created yet.
 
 ### demo_assets/
-- Models and C9 data stay out of git (decision 2026-11-17); teammates request them from Yuhan, sharing method TBD. v3 `traindev` models only. The series6 clock is Taiwan local time labelled UTC; not shifted.
+- Models and scalers are in git (synth decision 2026-11-17, supersedes housekeeping #6); the real C9 data stays out of git, internal only, on request from Yuhan (sharing method TBD). v3 `traindev` models only. The series6 clock is Taiwan local time labelled UTC; not shifted.
 
 ### design_docs/
 - Design doc v3 (md + pdf), the packet_io walkthrough, this file, `tickets/`.
@@ -87,3 +88,4 @@ Outside the repo, read only: `~/Desktop/BALA/AI_for_Renze` (source data `08-Data
 - 2026-11-18 — housekeeping #6: `demo_assets/` layout (models + C9 data copied from AI_for_Renze, ignored), `MANIFEST.md` tracked, `check_assets.py`, `paths.ASSETS/MODELS`, default sources point at `demo_assets/data/`.
 - 2026-11-18 — housekeeping #7: first real C9 run on the Mac (see Runs).
 - 2026-11-18 — housekeeping #8: `frontend/ [planned]` added to the tree; entries checked against the repo.
+- 2026-11-18 — synth #1: `demo_assets/models/` (4 files, 146 KB) and `demo_assets/synthetic/` tracked; MANIFEST says what is in git.
