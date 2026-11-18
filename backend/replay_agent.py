@@ -35,7 +35,7 @@ from pathlib import Path
 import numpy as np
 
 from packet_io import ROW_S, ts_to_name, write_row
-from paths import DEMO_ROOT, HERE, layout, resolve_root
+from paths import ASSETS, DEMO_ROOT, layout, resolve_root
 
 WINDOW_START = '20260427T000000Z'
 WINDOW_END   = '20260518T000000Z'
@@ -44,9 +44,9 @@ MIN_RUN_MINUTES = 3.0              # fastest allowed (≈ 10,080×)
 HEARTBEAT_DATA_S = 60              # status update every 60 s of data time
 PROGRESS_DATA_S = 86_400           # one console line per data day
 
-DEMO_ASSET = HERE.parent / 'demo_assets' / 'c9_window.npz'
-FALLBACK_SOURCE = (HERE.parent.parent / 'AI_for_Renze' / '08-Data'
-                   / 'series6_cycle_9_converted.npy')
+DEMO_ASSET = ASSETS / 'c9_window.npz'
+FALLBACK_SOURCE = ASSETS / 'data' / 'series6_cycle_9_converted.npy'
+SEE_MANIFEST = 'see demo_assets/MANIFEST.md'
 
 
 def parse_utc(spec: str) -> int:
@@ -76,7 +76,10 @@ def load_source(path: Path | None) -> tuple[np.ndarray, Path]:
                 with np.load(p) as z:
                     return z['data'], p
             return np.load(p, mmap_mode='r'), p
-    raise SystemExit(f'no source found: build {DEMO_ASSET} with build_demo_assets.py or pass --source')
+    if path:
+        raise SystemExit(f'source not found: {path} ({SEE_MANIFEST})')
+    raise SystemExit(f'no source found: build {DEMO_ASSET.name} with build_demo_assets.py from '
+                     f'{FALLBACK_SOURCE} or pass --source ({SEE_MANIFEST})')
 
 
 def write_json(path: Path, obj: dict) -> None:

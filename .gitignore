@@ -5,7 +5,8 @@ __pycache__/
 
 # Runtime data: recreated on every demo run, or built from scripts in backend/
 /demo_root/
-/demo_assets/
+/demo_assets/*
+!/demo_assets/MANIFEST.md
 
 # Machine-specific settings and local backups
 backend/renze_paths.json

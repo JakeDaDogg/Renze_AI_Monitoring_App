@@ -10,18 +10,23 @@ digits, which float32 cannot hold); the npz is compressed.
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 
 import numpy as np
 
-from replay_agent import DEMO_ASSET, FALLBACK_SOURCE, WINDOW_END, WINDOW_START, parse_utc
+from replay_agent import (DEMO_ASSET, FALLBACK_SOURCE, SEE_MANIFEST, WINDOW_END, WINDOW_START,
+                          parse_utc)
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description='Build demo_assets/c9_window.npz')
-    ap.add_argument('--source', default=str(FALLBACK_SOURCE))
+    ap.add_argument('--source', type=Path, default=FALLBACK_SOURCE,
+                    help='default: demo_assets/data/series6_cycle_9_converted.npy')
     ap.add_argument('--start', type=parse_utc, default=parse_utc(WINDOW_START))
     ap.add_argument('--end', type=parse_utc, default=parse_utc(WINDOW_END))
     args = ap.parse_args()
+    if not args.source.exists():
+        raise SystemExit(f'source not found: {args.source} ({SEE_MANIFEST})')
     arr = np.load(args.source, mmap_mode='r')
     r0 = int(np.searchsorted(arr[:, 0], args.start, side='left'))
     r1 = int(np.searchsorted(arr[:, 0], args.end, side='left'))

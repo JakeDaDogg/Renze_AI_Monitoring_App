@@ -9,6 +9,8 @@ paths.py — resolve the data root for a mode. Demo and production never share a
   Anything else stops with an error, so production can only be used when it is named.
 
 Every root holds: to_be_processed/  processed/ (minutes.db, inference.db)  bad/  control/
+
+Demo inputs (models, data) live in <app>/demo_assets; what to request: demo_assets/MANIFEST.md.
 """
 from __future__ import annotations
 
@@ -18,6 +20,9 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 DEMO_ROOT = HERE.parent / 'demo_root'
+ASSETS = HERE.parent / 'demo_assets'
+MODELS = ASSETS / 'models'
+MANIFEST = ASSETS / 'MANIFEST.md'
 CONFIG = HERE / 'renze_paths.json'
 MODES = ('demo', 'prod')
 
