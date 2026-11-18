@@ -18,3 +18,6 @@ backend/_archive*/
 *.db
 *.db-wal
 *.db-shm
+
+# Synthetic data generator: needs internal series6 data; the output npz is tracked, the tool is not
+backend/tools/make_synthetic_demo.py
