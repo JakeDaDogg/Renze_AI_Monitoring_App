@@ -4,8 +4,9 @@ packet_io.py — shared file contract for the Renze replay agent and reader (v2)
 v2 contract: one CSV per 5-s row
 - Folder: demo_root/to_be_processed/
 - Name:   renze_YYYYMMDDTHHMMSSZ.csv, the row's UTC timestamp. Alphabetical order = time order.
-- Body:   header line `ts,<49 RAW_SENSOR_COLS>`, then one data line: integer epoch seconds and
-          49 values with 9 significant digits, '.' decimal point, '\\n' line ends.
+- Body:   header line `ts,<RAW_SENSOR_COLS>`, then one data line: integer epoch seconds and
+          one value per sensor with 9 significant digits, '.' decimal point, '\\n' line ends.
+          The sensor list is the active schema: full49 (production) or synth15 (demo), see below.
 - Publish: the writer writes .tmp/<name>.part, then os.replace()s it into the folder, so the
           reader never sees a half-written file.
 
@@ -14,15 +15,25 @@ how many files there are.
 """
 from __future__ import annotations
 
+import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
 
-# ── Column definitions ────────────────────────────────────────────────────────
+# ── Column definitions: two named schemas, chosen once per process ─────────────
+#
+# full49  — the production plant feed: 49 sensors, PT104S last. Default for --mode prod.
+# synth15 — the shareable demo: 11 model sensors + 4 extra sensors of the daily decision,
+#           no PT104S. Default for --mode demo. Demo only; production never uses it.
+#
+# Selection: environment variable RENZE_SCHEMA (full49 | synth15), read once when this module is
+# first imported. Entry scripts set the mode default with paths.preselect_schema(mode) before they
+# import packet_io or db; an explicit RENZE_SCHEMA always wins. Unset everywhere → full49.
+# Everything below is derived by name from the active list.
 
-RAW_SENSOR_COLS: list[str] = [
+FULL49_COLS: list[str] = [
     'VCB1-Power', 'VCB1-Voltage-LL-AVG', 'VCB1-Current-AVG', 'VCB1-PF',
     'VCB2-Power', 'VCB2-Voltage-LL-AVG', 'VCB2-Current-AVG', 'VCB2-PF',
     'VCB3-Power', 'VCB3-Voltage-LL-AVG', 'VCB3-Current-AVG', 'VCB3-PF',
@@ -34,22 +45,45 @@ RAW_SENSOR_COLS: list[str] = [
     'TT205', 'TT201', 'PT104S',
 ]  # 49 names; PT104S is last (npy column 49)
 
-# 48 canonical sensor names (PT104S dropped); used by reader, scoring, and SQLite
-CANON_SENSOR_COLS: list[str] = RAW_SENSOR_COLS[:-1]
+SYNTH15_COLS: list[str] = [
+    'VCB1-Power', 'VCB2-Power', 'PT100', 'PT101', 'PV101', 'TT203', 'LIT101', 'LV101',
+    'TT101', 'FT102', 'LV102', 'FT103', 'PT106', 'PT105', 'ENV-0',
+]  # canonical order; model 11 + decision extras TT203, PT105, PT106, LV102
+
+SCHEMAS: dict[str, list[str]] = {'full49': FULL49_COLS, 'synth15': SYNTH15_COLS}
+MODE_SCHEMA: dict[str, str] = {'prod': 'full49', 'demo': 'synth15'}
+SCHEMA_ENV = 'RENZE_SCHEMA'
+
+SCHEMA_NAME: str = os.environ.get(SCHEMA_ENV) or 'full49'
+if SCHEMA_NAME not in SCHEMAS:
+    raise SystemExit(f'{SCHEMA_ENV}={SCHEMA_NAME!r}: must be one of {sorted(SCHEMAS)}')
+
+# The 11 model features, in the order the models were trained (same list for pipe and HXG).
+# Notebook 09-B has 16 names but the indices match the pipe list — model stays as trained.
+MODEL_FEAT_COLS: list[str] = [
+    'VCB1-Power', 'VCB2-Power', 'PT100', 'PT101', 'PV101', 'LIT101', 'LV101', 'TT101',
+    'FT102', 'FT103', 'ENV-0',
+]
+
+# Sensors in a packet file, in file order
+RAW_SENSOR_COLS: list[str] = list(SCHEMAS[SCHEMA_NAME])
+if 'PT104S' in RAW_SENSOR_COLS and RAW_SENSOR_COLS[-1] != 'PT104S':
+    raise SystemExit('PT104S must be the last raw column')  # one_min_means drops it by position
+
+# Canonical sensor names (PT104S dropped if present); used by reader, scoring, and SQLite
+CANON_SENSOR_COLS: list[str] = [c for c in RAW_SENSOR_COLS if c != 'PT104S']
 
 # Index of VCB2-Power within CANON_SENSOR_COLS
-VCB2_IDX: int = CANON_SENSOR_COLS.index('VCB2-Power')  # 4
+VCB2_IDX: int = CANON_SENSOR_COLS.index('VCB2-Power')
 
-# 11 model feature indices into CANON_SENSOR_COLS (same list for pipe and HXG).
-# Notebook 09-B has 16 names but the indices match the pipe list — model stays as trained.
-MODEL_FEAT_INDICES: list[int] = [0, 4, 12, 13, 14, 19, 20, 21, 27, 29, 43]
-MODEL_FEAT_COLS: list[str] = [CANON_SENSOR_COLS[i] for i in MODEL_FEAT_INDICES]
+# Model feature indices into CANON_SENSOR_COLS, in MODEL_FEAT_COLS order
+MODEL_FEAT_INDICES: list[int] = [CANON_SENSOR_COLS.index(c) for c in MODEL_FEAT_COLS]
 
 ROW_S: int = 5          # one data row every 5 s
 MIN_S: int = 60         # 1-min samples
 BUNDLE_S: int = 900     # reader bundle = 15 min of data (one model window)
 
-N_COLS: int = 1 + len(RAW_SENSOR_COLS)   # 50: ts + 49 sensors
+N_COLS: int = 1 + len(RAW_SENSOR_COLS)   # ts + sensors: 50 (full49) or 16 (synth15)
 HEADER: str = 'ts,' + ','.join(RAW_SENSOR_COLS)
 
 _NAME_RE = re.compile(r'^renze_(\d{8}T\d{6}Z)\.csv$')
@@ -84,7 +118,7 @@ def floor_minute(ts: int) -> int:
 # ── Write ─────────────────────────────────────────────────────────────────────
 
 def write_row(path: Path, row: np.ndarray) -> None:
-    """Write one 50-value row (col 0 = epoch ts, cols 1–49 = RAW_SENSOR_COLS) to a CSV."""
+    """Write one N_COLS-value row (col 0 = epoch ts, then RAW_SENSOR_COLS) to a CSV."""
     line = f"{int(row[0])}," + ','.join(f'{float(v):.9g}' for v in row[1:])
     with open(path, 'w', newline='\n') as fh:
         fh.write(HEADER + '\n' + line + '\n')
@@ -94,7 +128,7 @@ def write_row(path: Path, row: np.ndarray) -> None:
 
 def read_row(path: Path) -> np.ndarray:
     """
-    Read and validate one packet file. Returns a (50,) float64 array.
+    Read and validate one packet file. Returns an (N_COLS,) float64 array.
     Raises ValueError if the file breaks the contract.
     """
     ts = name_to_ts(path.name)
@@ -120,12 +154,12 @@ def read_row(path: Path) -> np.ndarray:
 def one_min_means(rows: np.ndarray, start: int, end: int | None = None
                   ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    1-min means of rows (n × 50) with ts in [start, end); end defaults to start + BUNDLE_S.
+    1-min means of rows (n × N_COLS) with ts in [start, end); end defaults to start + BUNDLE_S.
     Works for one bundle or a batch of many; start must sit on a minute boundary.
 
     Returns, for minutes that have at least one row (empty minutes are skipped):
         min_ts : (k,) int64   — minute start
-        means  : (k, 48)      — mean over the rows present, PT104S dropped
+        means  : (k, len(CANON_SENSOR_COLS)) — mean over the rows present, PT104S dropped
         n_rows : (k,) int64   — rows behind each mean (12 = complete minute)
     """
     end = start + BUNDLE_S if end is None else end

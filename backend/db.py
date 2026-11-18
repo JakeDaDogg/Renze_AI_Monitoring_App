@@ -12,7 +12,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from packet_io import CANON_SENSOR_COLS
+from packet_io import CANON_SENSOR_COLS, SCHEMA_NAME
 
 PRAGMAS = """
 PRAGMA journal_mode=WAL;
@@ -74,14 +74,21 @@ CREATE TABLE IF NOT EXISTS db_info (
 def open_db(path: Path, table: str, mode: str) -> sqlite3.Connection:
     """
     Open (and create if needed) minutes.db or inference.db for `mode` ('demo' or 'prod').
-    A new file is labelled with its mode in db_info; an existing file whose label differs,
-    or whose schema is older, is refused, so a demo can never write into production.
+    A new file is labelled with its mode and sensor schema (packet_io.SCHEMA_NAME) in db_info;
+    an existing file whose labels differ, or whose table layout is older, is refused, so a demo
+    can never write into production and a full49 DB never takes synth15 rows (or the reverse).
     """
     if sqlite3.sqlite_version_info < (3, 31, 0):
         raise SystemExit(f'SQLite {sqlite3.sqlite_version} is too old: generated columns need 3.31+')
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
-    conn.executescript(PRAGMAS + _INFO_DDL + (MINUTES_DDL if table == 'minutes' else INFERENCE_DDL))
+    conn.executescript(PRAGMAS + _INFO_DDL)
+    stored = get_info(conn, 'sensor_schema')
+    if stored is not None and stored != SCHEMA_NAME:
+        conn.close()
+        raise SystemExit(f'{path} holds sensor schema {stored!r}, this process uses '
+                         f'{SCHEMA_NAME!r} (RENZE_SCHEMA): refusing to open it.')
+    conn.executescript(MINUTES_DDL if table == 'minutes' else INFERENCE_DDL)
     cols = [r[1] for r in conn.execute(f'PRAGMA table_xinfo({table})')]
     if cols != _EXPECTED[table]:
         conn.close()
@@ -91,6 +98,7 @@ def open_db(path: Path, table: str, mode: str) -> sqlite3.Connection:
     with conn:
         conn.execute("INSERT OR IGNORE INTO db_info VALUES ('mode', ?)", (mode,))
         conn.execute("INSERT OR IGNORE INTO db_info VALUES ('schema_version', ?)", (SCHEMA_VERSION,))
+        conn.execute("INSERT OR IGNORE INTO db_info VALUES ('sensor_schema', ?)", (SCHEMA_NAME,))
         conn.execute("INSERT OR IGNORE INTO db_info VALUES ('created_utc', strftime('%Y-%m-%dT%H:%M:%SZ','now'))")
     stored = get_info(conn, 'mode')
     if stored != mode:

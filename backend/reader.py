@@ -35,10 +35,22 @@ from pathlib import Path
 
 import numpy as np
 
-from db import INSERT_INFERENCE, INSERT_MINUTE, get_info, max_ts, open_db, set_info
-from packet_io import (BUNDLE_S, CANON_SENSOR_COLS, MIN_S, N_COLS, ROW_S, VCB2_IDX,
-                       floor_bundle, floor_minute, name_to_ts, read_row, ts_to_name)
-from paths import layout, resolve_root
+from paths import layout, preselect_schema, resolve_root
+
+
+def _pre_mode() -> str:
+    """--mode from the command line, read before packet_io/db pick the sensor schema."""
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument('--mode', choices=('demo', 'prod'))
+    return pre.parse_known_args()[0].mode or 'prod'
+
+
+preselect_schema(_pre_mode())   # demo → synth15, prod → full49, unless RENZE_SCHEMA is set
+
+from db import INSERT_INFERENCE, INSERT_MINUTE, get_info, max_ts, open_db, set_info  # noqa: E402
+from packet_io import (BUNDLE_S, CANON_SENSOR_COLS, MIN_S, N_COLS, ROW_S,  # noqa: E402
+                       SCHEMA_NAME, VCB2_IDX, floor_bundle, floor_minute, name_to_ts, read_row,
+                       ts_to_name)
 
 SCAN_DATA_S   = 60        # scan cadence, data time
 STALE_DATA_S  = 3600      # writer stale after this much data time with no sign of life
@@ -63,7 +75,7 @@ def tag(ts: int) -> str:
 
 def process(targets: np.ndarray, windows: np.ndarray) -> list[tuple]:
     """
-    targets: (k,) minute timestamps; windows: (k, 15, 48) 1-min means, the last row = the target.
+    targets: (k,) minute timestamps; windows: (k, 15, N_SENS) 1-min means, the last row = the target.
     Stub: vcb2_x2 = 2 × the target minute's VCB2-Power; saved_power = 0.0 placeholder.
     Replace with the RUL models: scale, score the k windows in one call, smooth over 60 raw scores.
     """
@@ -230,7 +242,7 @@ class Reader:
             g0 = start - (WINDOW_MIN - 1 + FILL_MAX_MIN) * MIN_S
             cur = self.m.execute(
                 'SELECT * FROM minutes WHERE ts >= ? AND ts < ? ORDER BY ts', (g0, end))
-            # columns: ts, ts_utc, n_rows, n_filled, 48 sensors
+            # columns: ts, ts_utc, n_rows, n_filled, N_SENS sensors
             data = cur.fetchall()
             n_grid = (end - g0) // MIN_S
             vals = np.full((n_grid, N_SENS), np.nan)
@@ -264,7 +276,7 @@ class Reader:
     def run(self) -> int:
         scan_s = SCAN_DATA_S / self.scale
         stale_s = STALE_DATA_S / self.scale
-        print(f"Reader [{self.mode}] {self.d['tbp'].parent}  scale {self.scale:,.0f}×  "
+        print(f"Reader [{self.mode}, {SCHEMA_NAME}] {self.d['tbp'].parent}  scale {self.scale:,.0f}×  "
               f"scan {scan_s * 1000:.0f} ms")
         print(f"Minutes cursor: {tag(self.mc) if self.mc else 'from the oldest file'}   "
               f"inference cursor: {tag(self.ic) if self.ic else 'first live minute'}")
@@ -331,9 +343,14 @@ def read_scale(mode: str, d: dict, override: float | None, resume: bool) -> floa
     print('Waiting for a running writer (start replay_agent.py first) …')
     while True:
         try:
-            scale = float(json.loads(d['speed'].read_text())['scale'])
+            speed = json.loads(d['speed'].read_text())
+            scale = float(speed['scale'])
             state = json.loads(d['status'].read_text()).get('state')
             if resume or state == 'running':
+                writer_schema = speed.get('schema', 'full49')
+                if writer_schema != SCHEMA_NAME:
+                    raise SystemExit(f'the writer uses sensor schema {writer_schema!r}, this reader '
+                                     f'{SCHEMA_NAME!r}: run both with the same RENZE_SCHEMA')
                 return scale
         except (OSError, ValueError, KeyError):
             pass

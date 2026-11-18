@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -25,6 +26,19 @@ MODELS = ASSETS / 'models'
 MANIFEST = ASSETS / 'MANIFEST.md'
 CONFIG = HERE / 'renze_paths.json'
 MODES = ('demo', 'prod')
+_MODE_SCHEMA = {'demo': 'synth15', 'prod': 'full49'}   # same table as packet_io.MODE_SCHEMA
+
+
+def preselect_schema(mode: str) -> str:
+    """Set the sensor schema default for `mode` (demo → synth15, prod → full49) unless
+    RENZE_SCHEMA is already set. Call before packet_io or db is imported: the schema is chosen
+    once per process. Returns the schema name in force."""
+    name = os.environ.setdefault('RENZE_SCHEMA', _MODE_SCHEMA[mode])
+    pio = sys.modules.get('packet_io')
+    if pio is not None and pio.SCHEMA_NAME != name:
+        raise RuntimeError(f'packet_io was imported with schema {pio.SCHEMA_NAME!r} before '
+                           f'preselect_schema({mode!r}) chose {name!r}')
+    return name
 
 
 def resolve_root(mode: str, override: Path | None = None) -> Path:

@@ -34,8 +34,11 @@ from pathlib import Path
 
 import numpy as np
 
-from packet_io import ROW_S, ts_to_name, write_row
-from paths import ASSETS, DEMO_ROOT, layout, resolve_root
+from paths import ASSETS, DEMO_ROOT, layout, preselect_schema, resolve_root
+
+preselect_schema('demo')        # synth15 unless RENZE_SCHEMA is set (e.g. full49 for the C9 replay)
+
+from packet_io import ROW_S, SCHEMA_NAME, ts_to_name, write_row  # noqa: E402
 
 WINDOW_START = '20260427T000000Z'
 WINDOW_END   = '20260518T000000Z'
@@ -123,7 +126,7 @@ def run(args: argparse.Namespace) -> None:
     if not args.keep:
         fresh_demo_root(root)
     d = layout(root)
-    write_json(d['speed'], {'scale': scale, 'locked': True,
+    write_json(d['speed'], {'scale': scale, 'locked': True, 'schema': SCHEMA_NAME,
                             'written_utc': datetime.now(timezone.utc).isoformat()})
 
     stop = {'flag': False}

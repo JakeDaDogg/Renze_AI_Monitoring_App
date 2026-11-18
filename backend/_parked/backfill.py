@@ -30,6 +30,12 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))   # backend/: paths, db, packet_io
 
+import os  # noqa: E402
+
+# Production history is always the full 49-sensor schema.
+if os.environ.setdefault('RENZE_SCHEMA', 'full49') != 'full49':
+    raise SystemExit(f"backfill.py needs RENZE_SCHEMA=full49, not {os.environ['RENZE_SCHEMA']!r}")
+
 from db import INSERT_MINUTE, MINUTE_COLS, open_db
 from packet_io import CANON_SENSOR_COLS, MIN_S, ts_to_name
 from paths import HERE, layout, resolve_root
