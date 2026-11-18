@@ -26,6 +26,7 @@ AI_Monitor_App/
 │   ├── maint_recovery.py           daily maintenance decision (recovered kWh), not wired yet
 │   ├── maint_recovery_v0.json      coefficients for maint_recovery.py
 │   └── renze_paths.json            machine-specific prod root (ignored)
+├── frontend/ [planned]             Next.js dashboard, own package.json / node_modules/
 ├── demo_root/                      runtime, recreated by every demo run (ignored)
 ├── demo_assets/                    demo inputs; only MANIFEST.md is tracked
 │   ├── MANIFEST.md                 tracked: what to request, target path, size, sha256
@@ -62,6 +63,9 @@ Outside the repo, read only: `~/Desktop/BALA/AI_for_Renze` (source data `08-Data
 - `_parked/backfill.py` — parked (tracked; `.gitignore` only drops `backend/_archive*/`). Production history from series6 cycles 1–8, zero placeholder rows for gaps. Adds `backend/` to `sys.path`, so `python backend/_parked/backfill.py --dry-run` works from any folder.
 - `maint_recovery.py` + `maint_recovery_v0.json` — recovered kWh from cleaning tomorrow; sensors TT203, PT100, PT105, LIT101, PT106, LV102.
 
+### frontend/ [planned]
+- Next.js dashboard beside `backend/`; reads the backend's databases/API (design doc §2.5). Not created yet.
+
 ### demo_assets/
 - Models and C9 data stay out of git (decision 2026-11-17); teammates request them from Yuhan, sharing method TBD. v3 `traindev` models only. The series6 clock is Taiwan local time labelled UTC; not shifted.
 
@@ -82,3 +86,4 @@ Outside the repo, read only: `~/Desktop/BALA/AI_for_Renze` (source data `08-Data
 - 2026-11-18 — housekeeping #5: root `.venv/` and `.python-version` removed; `backend/requirements.txt` added.
 - 2026-11-18 — housekeeping #6: `demo_assets/` layout (models + C9 data copied from AI_for_Renze, ignored), `MANIFEST.md` tracked, `check_assets.py`, `paths.ASSETS/MODELS`, default sources point at `demo_assets/data/`.
 - 2026-11-18 — housekeeping #7: first real C9 run on the Mac (see Runs).
+- 2026-11-18 — housekeeping #8: `frontend/ [planned]` added to the tree; entries checked against the repo.
