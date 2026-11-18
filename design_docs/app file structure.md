@@ -21,6 +21,8 @@ AI_Monitor_App/
 │   ├── check_assets.py             compares local demo_assets/ files with MANIFEST.md hashes
 │   ├── reader.py                   reader: minutes track + inference track (process() is a stub)
 │   ├── viewer.py                   live plot of inference.db (read-only)
+│   ├── tools/
+│   │   └── make_synthetic_demo.py  builds demo_assets/synthetic/ from series6 C4–C6 (run once)
 │   ├── tests/
 │   │   └── test_schema.py          schema switch check (full49 unchanged, synth15, db refusal)
 │   ├── _parked/
@@ -33,7 +35,8 @@ AI_Monitor_App/
 ├── demo_assets/                    demo inputs; MANIFEST.md, models/, synthetic/ tracked
 │   ├── MANIFEST.md                 tracked: what to request, target path, size, sha256
 │   ├── models/                     tracked: pipe/hxg_rul_v3_traindev .weights.h5 + _scaler.pkl
-│   ├── synthetic/                  tracked: synthetic demo data (see synth #3)
+│   ├── synthetic/                  tracked: renze_synth_c456_v1.npz (9 MB) + README.md
+│   ├── synthetic_plots/            ignored: quick-look PNGs from make_synthetic_demo.py
 │   ├── data/                       ignored, internal: series6_cycle_9_converted.npy (415 MB)
 │   └── c9_window.npz               ignored: built by build_demo_assets.py
 ├── design_docs/
@@ -62,6 +65,7 @@ Outside the repo, read only: `~/Desktop/BALA/AI_for_Renze` (source data `08-Data
 - `db.py` — `minutes` (ts, ts_utc, n_rows, n_filled, 48 sensors) and `inference` (ts, ts_utc, vcb2_x2, saved_power, model_version) tables (sensor columns = the active `CANON_SENSOR_COLS`), WAL; `db_info` holds mode, schema version and `sensor_schema`; a DB of another mode or sensor schema is refused.
 - `replay_agent.py` — demo writer. Resets `demo_root/`, locks the speed scale in `control/speed.json`, writes one CSV per 5-s row, heartbeat in `control/writer_status.json`. Schema default synth15; `speed.json` records the schema and the reader refuses a writer of another schema. Default window 2026-04-27 → 2026-05-18 (C9), `--run-minutes` 5 (min 3). Source: `demo_assets/c9_window.npz`, else `demo_assets/data/series6_cycle_9_converted.npy`, or `--source`; missing → "see demo_assets/MANIFEST.md".
 - `build_demo_assets.py` — cuts the C9 window from the converted `.npy` (default `demo_assets/data/`, `--source` overridable) into `demo_assets/c9_window.npz`.
+- `tools/make_synthetic_demo.py` — builds the synthetic demo data (runs once on Yuhan's Mac; inputs `series6_cycle_{4,5,6}_raw.npy`, `RENZE_SERIES6_DIR`). Last 10 operating days before each cleaning date (notebook dates), aligned, each 5-s row a Dirichlet(1,1,1)-weighted mix of C4/C5/C6, 1-h shutdown tail, ts from 2000-01-01T00:00:00Z. Method in `demo_assets/synthetic/README.md`.
 - `check_assets.py` — hashes the local demo assets against `MANIFEST.md`, prints ok / MISSING / MISMATCH, exit 1 if any.
 - `reader.py` — `--mode demo|prod` (also picks the schema default). Averages 12 rows into a 1-min sample (`minutes.db`), scores 15-min windows with `process()` (`inference.db`). `process()` is a stub (2 × VCB2-Power).
 - `viewer.py` — matplotlib live plot of `inference.vcb2_x2`, read-only connection.
@@ -94,3 +98,4 @@ Outside the repo, read only: `~/Desktop/BALA/AI_for_Renze` (source data `08-Data
 - 2026-11-18 — housekeeping #8: `frontend/ [planned]` added to the tree; entries checked against the repo.
 - 2026-11-18 — synth #1: `demo_assets/models/` (4 files, 146 KB) and `demo_assets/synthetic/` tracked; MANIFEST says what is in git.
 - 2026-11-18 — synth #2: sensor schema switch (`full49` / `synth15`, `RENZE_SCHEMA`) in `packet_io.py`; `db_info.sensor_schema`; backfill forces full49; `tests/test_schema.py`.
+- 2026-11-18 — synth #3: `tools/make_synthetic_demo.py`; `demo_assets/synthetic/renze_synth_c456_v1.npz` (173,520 × 15, 9.2 MB) + README; MANIFEST row.
