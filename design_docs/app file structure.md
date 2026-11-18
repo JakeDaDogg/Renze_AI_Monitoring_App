@@ -86,6 +86,8 @@ Outside the repo, read only: `~/Desktop/BALA/AI_for_Renze` (source data `08-Data
 
 ## Runs
 - 2026-11-18, C9, Mac (backend/.venv, Python 3.13): `build_demo_assets.py` → 362,880 rows, 79 MB. 3 min (2,016 files/s) and 5 min (1,210 files/s): reader kept up (backlog max 151 / 88 files), 30,240 minutes, 30,226 inference rows (first 14 minutes: window not fillable), 0 files in `bad/`, writer and reader exit 0; `viewer.py` reads the v3 `inference` table.
+- 2026-11-18, synthetic (synth15), Mac, 3 min (964 files/s): 173,520 files, reader kept up (backlog max 42 files), 14,460 minutes (all 12-row), 14,446 inference rows, 0 in `bad/`, exit 0 / 0. Last hour: rolling 15-min VCB2 < 300 kW (Critical) for 55 of 60 minutes, from 00:05 into the tail; none before. Offline RUL scoring not run (no TensorFlow in the venv).
+- 2026-11-18, C9 (full49) via `RENZE_SCHEMA=full49 … --source ../demo_assets/data/series6_cycle_9_converted.npy`, 2 days in 3 min: 2,880 minutes, 2,866 inference rows, 0 in `bad/`, exit 0 / 0. A synth15 reader against a full49 writer stops with a clear message.
 
 ## Change log
 - 2026-11-18 — housekeeping #1: file created in the repo (drafted from the repo state; merge with the claude.ai project copy by hand).
@@ -100,3 +102,4 @@ Outside the repo, read only: `~/Desktop/BALA/AI_for_Renze` (source data `08-Data
 - 2026-11-18 — synth #2: sensor schema switch (`full49` / `synth15`, `RENZE_SCHEMA`) in `packet_io.py`; `db_info.sensor_schema`; backfill forces full49; `tests/test_schema.py`.
 - 2026-11-18 — synth #3: `tools/make_synthetic_demo.py`; `demo_assets/synthetic/renze_synth_c456_v1.npz` (173,520 × 15, 9.2 MB) + README; MANIFEST row.
 - 2026-11-18 — synth #4: demo defaults to the synthetic file under synth15 (whole file); column-count check; C9 needs `RENZE_SCHEMA=full49`; `build_demo_assets.py` is full49-only.
+- 2026-11-18 — synth #5: end-to-end runs, synthetic and C9 full49 (see Runs).
