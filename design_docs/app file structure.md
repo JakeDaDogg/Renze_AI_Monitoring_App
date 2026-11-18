@@ -7,7 +7,7 @@ Scope today: the C9 replay demo. Production comes later through the same reader/
 
 ```
 AI_Monitor_App/
-├── README.md                       what the app is, layout, run order
+├── README.md                       purpose, layout, demo run order
 ├── .gitignore
 ├── .python-version                 Python version for the root venv (3.12)
 ├── .venv/                          root venv (ignored)
@@ -41,7 +41,7 @@ Outside the repo, read only: `~/Desktop/BALA/AI_for_Renze` (source data `08-Data
 ## Entries
 
 ### Root
-- `README.md` — one-line title.
+- `README.md` — purpose (C9 replay demo now, production later), layout, demo run order, links to this file and the design doc.
 - `.gitignore` — ignores venvs, `__pycache__`, `.DS_Store`, `/demo_root/`, `/demo_assets/`, `backend/renze_paths.json`, `backend/_archive*/`, `*.db*`.
 - `.python-version`, `.venv/` — a root Python environment (3.12).
 - `renze_paths.json` — placeholder `{"prod_root": "/path/to/renze_prod"}`; nothing reads it.
@@ -65,3 +65,4 @@ Outside the repo, read only: `~/Desktop/BALA/AI_for_Renze` (source data `08-Data
 
 ## Change log
 - 2026-11-18 — housekeeping #1: file created in the repo (drafted from the repo state; merge with the claude.ai project copy by hand).
+- 2026-11-18 — housekeeping #2: README rewritten.
