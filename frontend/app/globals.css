@@ -1,0 +1,107 @@
+@import "tailwindcss";
+
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0a0a0a;
+    --foreground: #ededed;
+  }
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+/* ---- Interactive diagram ------------------------------------------------ */
+.plant-diagram {
+  font-family: "PingFang TC", "Noto Sans TC", "Noto Sans CJK TC", "Microsoft JhengHei",
+    var(--font-geist-sans), sans-serif;
+}
+/* White halo behind labels so they read on any background. */
+.plant-diagram .part-label,
+.plant-diagram .part-label-en {
+  paint-order: stroke;
+  stroke: #ffffff;
+  stroke-width: 4px;
+  stroke-linejoin: round;
+}
+.plant-diagram .vessel-text {
+  paint-order: stroke;
+  stroke: rgb(15 23 42 / 0.25);
+  stroke-width: 2px;
+}
+
+/* Hover / keyboard focus: the component glows red. */
+.diagram-part .part-shape {
+  transition: stroke 120ms ease, filter 120ms ease;
+}
+.diagram-part:hover .part-shape,
+.diagram-part:focus-visible .part-shape {
+  stroke: #ef4444; /* red-500 */
+  stroke-width: 4px;
+  filter: drop-shadow(0 0 5px #ef4444) drop-shadow(0 0 14px rgb(239 68 68 / 0.7));
+}
+.diagram-part:hover .part-label,
+.diagram-part:focus-visible .part-label,
+.diagram-part[data-selected] .part-label {
+  fill: #dc2626; /* red-600 */
+}
+.diagram-part:hover .part-label-en,
+.diagram-part:focus-visible .part-label-en,
+.diagram-part[data-selected] .part-label-en {
+  fill: #ef4444;
+}
+.diagram-part:focus {
+  outline: none;
+}
+/* Selected component keeps a steady red outline (no glow). */
+.diagram-part[data-selected] .part-shape {
+  stroke: #dc2626;
+  stroke-width: 3.5px;
+}
+
+/* Motion: flow dots in pipes, condenser fans, buffer-vessel surface. */
+.plant-diagram .flow {
+  stroke-dasharray: 0.1 26;
+  animation: pipe-flow 1.4s linear infinite;
+}
+@keyframes pipe-flow {
+  to {
+    stroke-dashoffset: -26.1;
+  }
+}
+.plant-diagram .fan-blades {
+  animation: fan-spin 1.2s linear infinite;
+}
+@keyframes fan-spin {
+  0%, 100% { transform: scaleX(1); }
+  50% { transform: scaleX(0.25); }
+}
+.plant-diagram .wave {
+  animation: wave-drift 3s linear infinite;
+}
+@keyframes wave-drift {
+  to {
+    transform: translateX(60px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .plant-diagram .flow,
+  .plant-diagram .fan-blades,
+  .plant-diagram .wave {
+    animation: none;
+  }
+}
